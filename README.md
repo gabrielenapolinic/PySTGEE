@@ -32,27 +32,27 @@ The following sections illustrate the operational steps of the tool, ordered by 
 
 ### 1. Initialization and Data Loading
 Upon execution, the script authenticates with GEE, loads the user-defined vector assets, and renders the study area on the interactive map. The control dashboard is initialized in the bottom-right corner.
-![Initialization](img/initimage_c.png)
+![Initialization](PySTGEE/initimage_c.png)
 
 ### 2. Model Calibration
 The calibration process involves training the Random Forest model on the dataset constructed from historical events. The dashboard displays the Feature Importance plot and the Receiver Operating Characteristic (ROC) curve. The map renders the resulting susceptibility probability distribution for the calibration set.
-![Calibration Probability Map](img/calibration_c.png)
+![Calibration Probability Map](PySTGEE/calibration_c.png)
 
 ### 3. Calibration Diagnostics (Spatial Confusion Matrix)
-To assess the spatial accuracy of the calibration, the tool generates a map of the Confusion Matrix classes. This visualization distinguishes between True Positives, False Positives, True Negatives, and False Negatives, helping to identify specific morphological units where the model systematic fails.
-![Calibration Confusion Matrix](img/calibration2_c.png)
+To assess the spatial accuracy of the calibration, the tool generates a map of the Confusion Matrix classes. This visualization distinguishes between True Positives, False Positives, True Negatives, and False Negatives, helping to identify specific morphological units where the model systematically fails.
+![Calibration Confusion Matrix](PySTGEE/calibration2_c.png)
 
 ### 4. Cross-Validation
 The validation module executes a 5-Fold Stratified Cross-Validation. The results panel updates to show the Validation ROC Curve and a numeric Confusion Matrix aggregated from the folds. The map visualization updates to show the susceptibility map derived from the validation predictions.
-![Validation Results](img/validation_c.png)
+![Validation Results](PySTGEE/validation_c.png)
 
 ### 5. Validation Diagnostics
 This step visualizes the spatial distribution of prediction errors during the cross-validation phase. It provides insights into the model's ability to generalize to unseen data and highlights areas of spatial overfitting or underfitting.
-![Validation Confusion Map](img/validation2_c.png)
+![Validation Confusion Map](PySTGEE/validation2_c.png)
 
 ### 6. Prediction and Forecasting
 In the final step, the user defines a target forecast date. The system retrieves the specific rainfall conditions for that date and applies the trained model to generate a "Future Scenario" susceptibility map, identifying areas at high risk under those specific meteorological conditions.
-![Final Prediction](img/prediction_c.png)
+![Final Prediction](PySTGEE/prediction_c.png)
 
 ## Dependencies
 * `earthengine-api`
