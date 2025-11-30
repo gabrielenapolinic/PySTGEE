@@ -63,8 +63,18 @@ In the final step, the user defines a target forecast date. The system retrieves
 * `plotly`
 * `ipywidgets`
 
+## License
+
+This project is licensed under the **GNU General Public License v3.0** (GPLv3).
+
+![GPLv3 License](GPLv3_Logo.svg.png)
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
 ## Contacts
-The STGEE/PySTGEE methodology has been authored by **Giacomo Titti**, **Gabriele Nicola Napoli**
+The STGEE/PySTGEE methodology has been authored by **Giacomo Titti** and **Gabriele Nicola Napoli**.
 
 For any request, comment, or suggestion, please write to: giacomotitti@gmail.com or gabrielenicolanapoli@gmail.com
 
