@@ -1,33 +1,77 @@
-# STGEE
+# PySTGEE: Space-Time Landslide Susceptibility with Google Earth Engine
 
-Susceptibility Tool for Google Earth Engine (STGEE) is a tool for spatial susceptibility analysis. It allows to calibrate, cross-validate and predict susceptiblity of a selected study area using Random Forest model. More details about the application can be found in the article: [link to the article](https://doi.org/10.1016/j.jag.2022.103089).
+**PySTGEE** is a Python-based implementation of a **Space-Time Landslide Susceptibility** assessment workflow. It leverages the computational power of Google Earth Engine (GEE) for spatial data reduction and the flexibility of the Scikit-learn library for Machine Learning modeling.
 
-## Run/Edit application
+This tool allows users to calibrate, cross-validate, and predict landslide susceptibility over a selected study area using a Random Forest model. By integrating static morphological factors with dynamic antecedent rainfall derived from satellite missions (GPM), PySTGEE extends traditional static susceptibility mapping into the temporal domain.
 
-From [here](https://giacomotitti.users.earthengine.app/view/stgee) you can run our application. See the source code from [here](https://code.earthengine.google.com/749feb7e245e1a0e6af07ae9970e82d6)
+More details about the original methodology can be found in the article: [Link to the article]
 
-## How to use
+## Application Overview
 
-The STGEE requires two vector data: the map units layer (in the application we used slope units) of the study area and the map units layer of the area where the susceptibility should be predicted.
+The application is designed to run in a Jupyter/Colab environment and automates the retrieval of environmental predictors, the training of the machine learning model, and the visualization of results.
 
-Both tables shlould contain the column of the dependent variable (0/1) and the columns of the independent variables. Our application use the table of the variables generated with the [SRT tool](https://github.com/giactitti/SRT).
+### Key Features
+* **Space-Time Integration**: Merges static terrain units (e.g., Slope Units) with dynamic rainfall variables (7-day and 14-day cumulative rainfall) extracted from the JAXA GPM/GSMaP operational dataset (`JAXA/GPM_L3/GSMaP/v8/operational`).
+* **Machine Learning Core**: Utilizes a Random Forest Classifier (via `scikit-learn`) configured with balanced class weights to handle dataset imbalance.
+* **Rigorous Validation**: Implements Stratified K-Fold Cross-Validation to assess model robustness and generalization capabilities.
+* **Interactive Dashboard**: Features a Graphical User Interface (GUI) built with `ipywidgets` and `geemap` for real-time interaction, threshold optimization (Youden's J statistic), and spatial visualization of model performance.
 
-SRT is a collector and spatial reducer of data from GEE available dataset. It allows you to calculate the spatial mean and standard deviation from several online available dataset inside each feature of a feature collection.
+## How to Use
 
-![image](https://user-images.githubusercontent.com/59020464/163784560-40c9adb7-ccc2-45c6-bd7b-0ec662b817e4.png)
+### Data Requirements
+The PySTGEE workflow requires the definition of three specific Earth Engine assets in the configuration section:
 
-![image](https://user-images.githubusercontent.com/59020464/163784965-3cff0b6d-0b0a-46f2-9e3f-7e3a95a39bca.png)
+1.  **Polygons Asset (Map Units)**: A feature collection defining the spatial domain (e.g., Slope Units or Grid Cells). These geometries must contain the static independent variables (e.g., Slope, Relief, Lithology, NDVI).
+2.  **Points Asset (Inventory)**: A feature collection of historical landslide occurrences. Crucially, this dataset must include a temporal attribute (date of the event) to allow the association with dynamic rainfall data.
+3.  **Prediction Asset**: The target feature collection for the forecasting phase (typically identical to the Polygons Asset).
+
+### Automated Data Reduction (SRT Logic)
+Similar to the Spatial Reduction Tool (SRT), this script acts as a collector and spatial reducer of data from GEE. During the training phase, the script iterates through the historical event dates, retrieves the corresponding rainfall rasters, and calculates spatial statistics (mean and standard deviation) for each map unit using the `reduceRegions` method.
+
+## Workflow and Interface
+
+The following sections illustrate the operational steps of the tool, ordered by execution task.
+
+### 1. Initialization and Data Loading
+Upon execution, the script authenticates with GEE, loads the user-defined vector assets, and renders the study area on the interactive map. The control dashboard is initialized in the bottom-right corner.
+![Initialization](img/initimage_c.jpg)
+
+### 2. Model Calibration
+The calibration process involves training the Random Forest model on the dataset constructed from historical events. The dashboard displays the Feature Importance plot and the Receiver Operating Characteristic (ROC) curve. The map renders the resulting susceptibility probability distribution for the calibration set.
+![Calibration Probability Map](img/calibration_c.jpg)
+
+### 3. Calibration Diagnostics (Spatial Confusion Matrix)
+To assess the spatial accuracy of the calibration, the tool generates a map of the Confusion Matrix classes. This visualization distinguishes between True Positives, False Positives, True Negatives, and False Negatives, helping to identify specific morphological units where the model systematic fails.
+![Calibration Confusion Matrix](img/calibration2_c.jpg)
+
+### 4. Cross-Validation
+The validation module executes a 5-Fold Stratified Cross-Validation. The results panel updates to show the Validation ROC Curve and a numeric Confusion Matrix aggregated from the folds. The map visualization updates to show the susceptibility map derived from the validation predictions.
+![Validation Results](img/validation_c.jpg)
+
+### 5. Validation Diagnostics
+This step visualizes the spatial distribution of prediction errors during the cross-validation phase. It provides insights into the model's ability to generalize to unseen data and highlights areas of spatial overfitting or underfitting.
+![Validation Confusion Map](img/validation2_c.jpg)
+
+### 6. Prediction and Forecasting
+In the final step, the user defines a target forecast date. The system retrieves the specific rainfall conditions for that date and applies the trained model to generate a "Future Scenario" susceptibility map, identifying areas at high risk under those specific meteorological conditions.
+![Final Prediction](img/prediction_c.jpg)
+
+## Dependencies
+* `earthengine-api`
+* `geemap`
+* `scikit-learn`
+* `pandas`
+* `numpy`
+* `plotly`
+* `ipywidgets`
 
 ## Contacts
+The STGEE/PySTGEE methodology has been authored by **Giacomo Titti**, **Gabriele Nicola Napoli**
 
-The STGEE has been authored by Giacomo Titti, Gabriele Nicola Napoli and Luigi Lombardo
-
-For any request, comment and suggestion, please write to me: giacomotitti@gmail.com
+For any request, comment, or suggestion, please write to: giacomotitti@gmail.com or gabrielenicolanapoli@gmail.com
 
 ## Cite
-
 Please cite us:
 
-- Titti, G., Nicola Napoli, G., Lombardo, L.. (2022). giactitti/STGEE: STGEE v1.1 (v1.1). Zenodo. https://doi.org/10.5281/zenodo.6471966
-- Titti, G., Nicola Napoli, G., Conoscenti, C., Lombardo, L.. (2022) Cloud-based interactive susceptibility modeling of gully erosion in Google Earth Engine. International Journal of Applied Earth Observation and Geoinformation, 115. [DOI 10.1016/j.jag.2022.103089](https://doi.org/10.1016/j.jag.2022.103089)
-
+* Titti, G., Nicola Napoli, G., Lombardo, L. (2022). giactitti/STGEE: STGEE v1.1 (v1.1). Zenodo. https://doi.org/10.5281/zenodo.6471966
+* Titti, G., Nicola Napoli, G., Conoscenti, C., Lombardo, L. (2022). Cloud-based interactive susceptibility modeling of gully erosion in Google Earth Engine. *International Journal of Applied Earth Observation and Geoinformation*, 115. DOI: 10.1016/j.jag.2022.103089
