@@ -1,6 +1,6 @@
 # PySTGEE: Space-Time Landslide Susceptibility with Google Earth Engine
 
-<img src="PySTGEE_logo_transparent.png" alt="PySTGEE Logo" width="100%"/>
+<img src="PySTGEE_logo_transparent_wletters.png" alt="PySTGEE Logo" width="100%"/>
 
 **PySTGEE** is a Python-based implementation of a **Space-Time Landslide Susceptibility** assessment workflow. It leverages the computational power of Google Earth Engine (GEE) for spatial data reduction and the flexibility of the Scikit-learn library for Machine Learning modeling.
 
