@@ -14,17 +14,20 @@ import json
 st.set_page_config(page_title="PySTGEE Dashboard", layout="wide")
 
 # --- 2. AUTHENTICATION (ROBUST) ---
+import subprocess # Aggiungi questo import in alto se manca
+
+# --- 2. AUTHENTICATION (CON POPUP DI SISTEMA) ---
 def check_gee_auth():
     DEFAULT_PROJECT = 'stgee-dataset' 
     
-    # Check Session State for Auth
+    # 1. Controlla se siamo già autenticati nella sessione
     if 'is_authenticated' not in st.session_state:
         st.session_state.is_authenticated = False
 
     if st.session_state.is_authenticated:
         return True
 
-    # Try Secrets
+    # 2. Prova i Secrets (per quando sarai sul Cloud)
     if "EARTHENGINE_TOKEN" in st.secrets:
         try:
             token_data = st.secrets["EARTHENGINE_TOKEN"]
@@ -39,7 +42,7 @@ def check_gee_auth():
         except Exception:
             pass
 
-    # Try Local
+    # 3. Prova l'inizializzazione Locale standard
     try:
         ee.Initialize(project=DEFAULT_PROJECT)
         st.session_state.is_authenticated = True
@@ -47,18 +50,41 @@ def check_gee_auth():
     except Exception:
         pass
 
-    # Login UI
-    st.warning("⚠️ Google Earth Engine access not detected.")
-    if st.button("🔐 Authenticate via Browser"):
-        try:
-            ee.Authenticate()
-            ee.Initialize(project=DEFAULT_PROJECT)
-            st.session_state.is_authenticated = True
-            st.rerun()
-        except Exception as e:
-            st.error(f"Login failed: {e}")
+    # 4. INTERFACCIA DI LOGIN (Se tutto il resto fallisce)
+    st.warning("⚠️ Accesso a Google Earth Engine non rilevato.")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        # Bottone per lanciare il processo
+        if st.button("🔐 Autentica ora", type="primary"):
+            try:
+                # Questo comando lancia l'autenticazione nel sistema operativo
+                # Dovrebbe aprire il browser predefinito del tuo PC
+                process = subprocess.Popen(["earthengine", "authenticate"], shell=True)
+                st.info("🌐 Si dovrebbe essere aperta una finestra del browser. Completa il login lì.")
+            except Exception as e:
+                st.error(f"Impossibile aprire il browser automaticamente: {e}")
+
+    with col2:
+        st.markdown("""
+        **Istruzioni:**
+        1. Clicca il pulsante a sinistra.
+        2. Se si apre una pagina web, accetta i termini.
+        3. Torna qui e clicca il pulsante **"Ricarica App"** qui sotto.
+        
+        *Se il pulsante non apre nulla:*
+        Apri il terminale nero dove hai lanciato streamlit e scrivi: `earthengine authenticate`
+        """)
+
+    # Bottone per ricaricare la pagina dopo aver fatto il login
+    if st.button("🔄 Ho completato il login! Ricarica App"):
+        st.rerun()
+    
+    # Ferma l'app finché non sei loggato
     st.stop()
 
+# Esegui il controllo
 check_gee_auth()
 
 # --- 3. SESSION STATE INITIALIZATION ---
