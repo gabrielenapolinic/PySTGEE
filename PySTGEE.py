@@ -13,7 +13,7 @@ import concurrent.futures
 import re
 import base64
 
-# --- CELL 1: USER CONFIGURATION ---
+# --- CELL 1: USER CONFIGURATION (ORIGINAL) ---
 EE_PROJECT = 'stgee-dataset'
 POLYGONS_ASSET = "projects/stgee-dataset/assets/export_predictors_polygons2"
 POINTS_ASSET = "projects/stgee-dataset/assets/pointsDate"
@@ -28,7 +28,7 @@ STATIC_PREDICTORS = ['Relief_mea', 'S_mean', 'VCv_mean', 'Hill_mean', 'NDVI_mean
 MIN_DAYS = 1
 MAX_DAYS = 30
 
-# --- CELL 3: PALETTES ---
+# --- CELL 3: PALETTES (ORIGINAL) ---
 VIS_PALETTE = [
     '#006b0b', '#1b7b25', '#4e9956', '#dbeadd', '#ffffff',
     '#f0b2ae', '#eb958f', '#df564d', '#d10e00'
@@ -42,11 +42,11 @@ def log(message):
     st.session_state['logs'].append(str(message))
 
 def render_log_console():
-    st.markdown("**OPERATION LOG**")
+    st.markdown("### OPERATION LOG")
     if 'logs' in st.session_state and st.session_state['logs']:
         st.code("\n".join(st.session_state['logs']), language="text")
     else:
-        st.code("Ready...", language="text")
+        st.code("Waiting for analysis...", language="text")
 
 # --- AUTHENTICATION ---
 @st.cache_resource
@@ -119,7 +119,6 @@ def download_training_data():
     raw_dates = landPoints.aggregate_array(DATE_COLUMN).distinct().getInfo()
     dates_list = [str(d)[:10] for d in raw_dates]
     
-    # We return the list length to log it outside (since logging inside cached func is tricky)
     meta_info = f"Event Dates found: {len(dates_list)}\nRetrieving rainfall data for windows {MIN_DAYS}-{MAX_DAYS} days..."
     
     def process_date(date_str):
@@ -236,7 +235,8 @@ def get_prediction_data_dynamic(target_date, best_days_n):
     return df, log_msgs
 
 # --- MAPPING FUNCTION ---
-def map_values(df, val_col, layer_name, palette):
+def get_map_layers(df, val_col, layer_name, palette):
+    """Prepares layer data but does not display it immediately."""
     def clean_id_py(val):
         s = str(val)
         digits = re.sub(r'[^0-9]', '', s)
@@ -259,35 +259,62 @@ def map_values(df, val_col, layer_name, palette):
     result_img = result_img.updateMask(result_img.gte(0))
 
     vis = {'palette': palette, 'min': 0, 'max': 3 if layer_name.startswith("Confusion") else 1}
-    
-    # We return the layer object and vis params instead of adding directly
     return result_img, vis
 
-# --- MAIN RUNNER (Corresponds to Cell 6) ---
+# --- MAIN RUNNER ---
 def run_app():
     st.title("PySTGEE: Landslide Modeling")
+
+    # SESSION STATE INITIALIZATION
+    if 'analysis_active' not in st.session_state:
+        st.session_state['analysis_active'] = False
+    if 'logs' not in st.session_state:
+        st.session_state['logs'] = []
     
-    # Log Console
-    render_log_console()
+    # -------------------------------------------
+    # VIEW 1: INITIAL LAUNCHER (The "Run Analysis" Button)
+    # -------------------------------------------
+    if not st.session_state['analysis_active']:
+        if st.button("Run Analysis", type="primary"):
+            st.session_state['analysis_active'] = True
+            st.rerun() # Refresh to show View 2
 
-    # Initialize
-    if not initialize_ee(): st.stop()
+    # -------------------------------------------
+    # VIEW 2: ACTIVE ANALYSIS (Map + Controls)
+    # -------------------------------------------
+    else:
+        # 1. AUTHENTICATION
+        if not initialize_ee(): st.stop()
 
-    # Session State
-    if 'model' not in st.session_state: st.session_state['model'] = None
-    if 'best_window' not in st.session_state: st.session_state['best_window'] = None
-    if 'final_predictors' not in st.session_state: st.session_state['final_predictors'] = []
-    if 'training_df' not in st.session_state: st.session_state['training_df'] = None
+        # 2. LOG CONSOLE (TOP)
+        render_log_console()
 
-    # Tabs (mimicking Buttons flow)
-    tab1, tab2, tab3 = st.tabs(["1. Calibration", "2. Validation", "3. Forecast"])
+        # 3. CONTROLS (BUTTONS ROW)
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+        with col1:
+            btn_calib = st.button("Run Calibration")
+        with col2:
+            btn_valid = st.button("Run Validation")
+        with col3:
+            btn_pred = st.button("Run Prediction")
+        with col4:
+            f_date = st.date_input("Date", value=pd.to_datetime('today'), label_visibility="collapsed")
 
-    # --- CALIBRATION ---
-    with tab1:
-        if st.button("Run Calibration"):
-            st.session_state['logs'] = [] # Clear logs
-            log(f"Loading assets...")
-            
+        # 4. INITIALIZE SESSION DATA
+        if 'model' not in st.session_state: st.session_state['model'] = None
+        if 'best_window' not in st.session_state: st.session_state['best_window'] = None
+        if 'final_predictors' not in st.session_state: st.session_state['final_predictors'] = []
+        if 'training_df' not in st.session_state: st.session_state['training_df'] = None
+        if 'active_layers' not in st.session_state: st.session_state['active_layers'] = []
+        if 'metrics_html' not in st.session_state: st.session_state['metrics_html'] = ""
+        if 'charts' not in st.session_state: st.session_state['charts'] = None
+
+        # 5. LOGIC HANDLERS (Processing Button Clicks)
+        
+        # --- CALIBRATION LOGIC ---
+        if btn_calib:
+            st.session_state['logs'] = []
+            log("Loading assets...")
             with st.spinner("Downloading Data..."):
                 df, meta = download_training_data()
                 st.session_state['training_df'] = df
@@ -297,11 +324,10 @@ def run_app():
                 y = df['P/A']
                 best_auc = 0
                 best_days = MIN_DAYS
-                
                 log(f"Starting Optimization: Scanning windows {MIN_DAYS}-{MAX_DAYS} days...")
                 log("-" * 30)
                 
-                progress = st.progress(0)
+                prog = st.progress(0)
                 for days in range(MIN_DAYS, MAX_DAYS + 1):
                     cols = [f'Rn{days}_m', f'Rn{days}_s']
                     if not all(c in df.columns for c in cols): continue
@@ -311,22 +337,16 @@ def run_app():
                     probs = rf.predict_proba(X_temp)[:, 1]
                     fpr, tpr, _ = roc_curve(y, probs)
                     score = auc(fpr, tpr)
-                    
                     log(f"   > Day {days}: AUC = {score:.4f}")
-                    if score > best_auc:
-                        best_auc = score
-                        best_days = days
-                    progress.progress((days - MIN_DAYS) / (MAX_DAYS - MIN_DAYS))
-                progress.empty()
+                    if score > best_auc: best_auc, best_days = score, days
+                    prog.progress((days - MIN_DAYS) / (MAX_DAYS - MIN_DAYS))
+                prog.empty()
 
                 st.session_state['best_window'] = best_days
                 st.session_state['final_predictors'] = STATIC_PREDICTORS + [f'Rn{best_days}_m', f'Rn{best_days}_s']
-                
                 log("-" * 30)
-                log(f"FINAL SELECTION:\n   Best Window: {best_days} Days\n   Max AUC:     {best_auc:.4f}")
-                log("-" * 30)
-                log("Training final robust model...")
-                st.experimental_rerun() # Refresh logs
+                log(f"FINAL: Best Window: {best_days} Days | Max AUC: {best_auc:.4f}")
+                log("Training final model...")
 
                 X = df[st.session_state['final_predictors']].fillna(0)
                 rf_final = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, oob_score=True, class_weight='balanced')
@@ -339,96 +359,88 @@ def run_app():
                 df['calib_pred'] = m['y_pred_opt']
                 df['conf_class'] = df.apply(lambda r: calc_confusion_class(r, 'calib_pred'), axis=1)
 
-                st.subheader("Calibration Results")
+                st.session_state['metrics_html'] = f"<b>Calibration</b>: AUC={m['auc']:.3f} | Acc={m['acc']:.3f} | F1={m['f1']:.3f}"
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("AUC", f"{m['auc']:.4f}")
-                c2.metric("Accuracy", f"{m['acc']:.4f}")
-                c3.metric("F1 Score", f"{m['f1']:.4f}")
-
-                # Plots
+                # Store Layers for Map
+                l1, v1 = get_map_layers(df, 'calib_prob', 'Calibration Map', VIS_PALETTE)
+                l2, v2 = get_map_layers(df, 'conf_class', 'Confusion Calibration', PALETTE_CONFUSION)
+                st.session_state['active_layers'] = [
+                    (l1, v1, 'Calibration Map'),
+                    (l2, v2, 'Confusion Calibration')
+                ]
+                
+                # Charts
                 imp = pd.Series(rf_final.feature_importances_, index=st.session_state['final_predictors']).sort_values()
                 fig = make_subplots(rows=2, cols=1, subplot_titles=("Feature Importance", "Confusion Matrix"))
                 fig.add_trace(go.Bar(x=imp.values, y=imp.index, orientation='h'), row=1, col=1)
                 cm = confusion_matrix(y, m['y_pred_opt'])
                 fig.add_trace(go.Heatmap(z=cm, x=['Pred:0', 'Pred:1'], y=['True:0', 'True:1'], colorscale='Blues', texttemplate="%{z}"), row=2, col=1)
-                fig.update_layout(height=600, showlegend=False)
-                st.plotly_chart(fig)
+                fig.update_layout(height=500, showlegend=False)
+                st.session_state['charts'] = fig
+                st.rerun()
 
-                # Maps
-                st.subheader("Maps")
-                m_calib = geemap.Map(height=500)
-                m_calib.centerObject(ee.FeatureCollection(PREDICTION_ASSET), 10)
-                
-                layer1, vis1 = map_values(df, 'calib_prob', 'Calibration Map', VIS_PALETTE)
-                layer2, vis2 = map_values(df, 'conf_class', 'Confusion Calibration', PALETTE_CONFUSION)
-                
-                m_calib.addLayer(layer1, vis1, 'Calibration Map')
-                m_calib.addLayer(layer2, vis2, 'Confusion Calibration')
-                m_calib.to_streamlit()
-                
-                # Download
-                df_export = filter_dataframe_for_export(df)
-                csv = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Calibration CSV", csv, "calibration.csv", "text/csv")
-
-    # --- VALIDATION ---
-    with tab2:
-        if st.button("Run Validation"):
-            if not st.session_state['model']:
-                st.error("Run Calibration first!")
+        # --- VALIDATION LOGIC ---
+        if btn_valid:
+            if not st.session_state['model']: st.error("Train Model First!")
             else:
-                log("Starting Validation process...")
+                log("Running Validation...")
                 df = st.session_state['training_df']
                 X = df[st.session_state['final_predictors']].fillna(0)
                 y = df['P/A']
-                
-                log("Running Cross-Validation (10-Folds)...")
                 y_probs = cross_val_predict(st.session_state['model'], X, y, cv=StratifiedKFold(n_splits=10), method='predict_proba')[:, 1]
                 m = calculate_advanced_metrics(y, y_probs)
                 log(f"Validation Done. AUC: {m['auc']:.4f}")
-                st.experimental_rerun()
-
-                st.subheader("Validation Metrics")
-                st.write(f"**AUC:** {m['auc']:.4f} | **F1:** {m['f1']:.4f} | **Kappa:** {m['kappa']:.4f}")
-
+                
                 df['valid_prob'] = y_probs
                 df['valid_pred'] = m['y_pred_opt']
                 df['valid_conf'] = df.apply(lambda r: calc_confusion_class(r, 'valid_pred'), axis=1)
+                
+                st.session_state['metrics_html'] = f"<b>Validation</b>: AUC={m['auc']:.3f} | F1={m['f1']:.3f}"
+                l1, v1 = get_map_layers(df, 'valid_prob', 'Validation Map', VIS_PALETTE)
+                l2, v2 = get_map_layers(df, 'valid_conf', 'Confusion Validation', PALETTE_CONFUSION)
+                st.session_state['active_layers'] = [
+                    (l1, v1, 'Validation Map'),
+                    (l2, v2, 'Confusion Validation')
+                ]
+                st.rerun()
 
-                m_valid = geemap.Map(height=500)
-                m_valid.centerObject(ee.FeatureCollection(PREDICTION_ASSET), 10)
-                l1, v1 = map_values(df, 'valid_prob', 'Validation Map', VIS_PALETTE)
-                l2, v2 = map_values(df, 'valid_conf', 'Confusion Validation', PALETTE_CONFUSION)
-                m_valid.addLayer(l1, v1, 'Validation Map')
-                m_valid.addLayer(l2, v2, 'Confusion Validation')
-                m_valid.to_streamlit()
-
-    # --- PREDICTION ---
-    with tab3:
-        f_date = st.date_input("Forecast Date", value=pd.to_datetime('today'))
-        if st.button("Run Prediction"):
-            if not st.session_state['model']:
-                st.error("Run Calibration first!")
+        # --- PREDICTION LOGIC ---
+        if btn_pred:
+            if not st.session_state['model']: st.error("Train Model First!")
             else:
                 with st.spinner("Processing..."):
                     df_pred, logs = get_prediction_data_dynamic(f_date.strftime('%Y-%m-%d'), st.session_state['best_window'])
                     for l in logs: log(l)
-                    
                     X_pred = df_pred[st.session_state['final_predictors']].fillna(0)
                     probs = st.session_state['model'].predict_proba(X_pred)[:, 1]
                     df_pred['SI'] = probs
+                    log(f"Max Risk: {probs.max():.2f}")
                     
-                    log(f"Prediction Done. Max Risk: {probs.max():.2f}")
-                    st.experimental_rerun()
-                    
-                    st.subheader(f"Prediction Map (Max Risk: {probs.max():.2f})")
-                    m_pred = geemap.Map(height=600)
-                    m_pred.centerObject(ee.FeatureCollection(PREDICTION_ASSET), 10)
-                    l_pred, v_pred = map_values(df_pred, 'SI', 'Prediction Map', VIS_PALETTE)
-                    m_pred.addLayer(l_pred, v_pred, 'Prediction Map')
-                    m_pred.to_streamlit()
-                    
-                    df_export = filter_dataframe_for_export(df_pred)
-                    csv = df_export.to_csv(index=False).encode('utf-8')
-                    st.download_button("Download Prediction CSV", csv, "prediction.csv", "text/csv")
+                    st.session_state['metrics_html'] = f"<b>Prediction</b>: Max Risk={probs.max():.2f}"
+                    l_pred, v_pred = get_map_layers(df_pred, 'SI', 'Prediction Map', VIS_PALETTE)
+                    st.session_state['active_layers'] = [(l_pred, v_pred, 'Prediction Map')]
+                    st.rerun()
+
+        # 6. RENDER RESULTS (MAP & PANELS)
+        
+        # Display Metrics & Charts (if any)
+        if st.session_state['metrics_html']:
+            st.markdown(st.session_state['metrics_html'], unsafe_allow_html=True)
+        if st.session_state['charts']:
+            st.plotly_chart(st.session_state['charts'], use_container_width=True)
+
+        # --- THE MAP (ALWAYS VISIBLE) ---
+        m = geemap.Map(height=600)
+        
+        # 1. ALWAYS Add Study Area (Like the notebook's 'activate_analysis')
+        predictors_polygons = ee.FeatureCollection(POLYGONS_ASSET)
+        m.centerObject(predictors_polygons, 10)
+        m.addLayer(predictors_polygons.style(**{'color': 'gray', 'fillColor': '00000000'}), {}, 'Study Area')
+        
+        # 2. Add Computed Layers (if any)
+        for layer, vis, name in st.session_state['active_layers']:
+            m.addLayer(layer, vis, name)
+            if not name.startswith("Confusion"):
+                m.add_colorbar(vis, label=name)
+        
+        m.to_streamlit()
