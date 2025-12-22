@@ -1,84 +1,83 @@
 import streamlit as st
-import datetime
+import ee
+import geemap.foliumap as geemap
+import interface  # IMPORTIAMO IL FILE CREATO SOPRA
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="PySTGEE Config", layout="centered")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="PySTGEE Dashboard", layout="wide")
 
-st.title("PySTGEE: User Configuration")
-st.markdown("Configure the analysis parameters below (Cell 1).")
+# --- AUTHENTICATION (SILENT) ---
+# Assumes 'earthengine authenticate' was run in terminal
+try:
+    ee.Initialize(project='stgee-dataset') # Default fallback
+except Exception:
+    st.warning("⚠️ GEE not initialized. Please run authentication in terminal.")
 
-# --- USER CONFIGURATION FORM ---
-with st.form("user_config_form"):
+# --- STATE MANAGEMENT ---
+if 'analysis_active' not in st.session_state:
+    st.session_state.analysis_active = False
+
+# --- 1. RENDER SIDEBAR (FROM INTERFACE.PY) ---
+# This draws the inputs on the left and gets the values
+config = interface.render_sidebar()
+
+# Check if button was clicked
+if config['start_clicked']:
+    st.session_state.analysis_active = True
+    # Optional: Re-initialize with the specific project user entered
+    try:
+        ee.Initialize(project=config['project'])
+        st.toast(f"Connected to project: {config['project']}")
+    except Exception as e:
+        st.error(f"Connection failed: {e}")
+
+# --- 2. MAIN CONTENT AREA ---
+st.title("PySTGEE: Landslide Hazard Modeling")
+
+if not st.session_state.analysis_active:
+    # STATE: WAITING FOR START
+    st.info("👈 Please configure the parameters in the sidebar and click 'Start Analysis'.")
+
+else:
+    # STATE: ANALYSIS STARTED
     
-    # 1. Earth Engine Project
-    st.subheader("1. Earth Engine Project Configuration")
-    EE_PROJECT = st.text_input("GEE Project ID", value='stgee-dataset')
+    # A. SHOW MAP WITH FEATURE COLLECTION
+    st.subheader("1. Study Area Visualization")
+    try:
+        m = geemap.Map()
+        # Load the polygons from the config
+        fc = ee.FeatureCollection(config['polygons_asset'])
+        
+        # Center and Add Layer
+        m.centerObject(fc, 10)
+        m.addLayer(fc.style(**{'color': 'blue', 'fillColor': '00000000'}), {}, "Slope Units")
+        
+        # Display Map
+        m.to_streamlit(height=500)
+    except Exception as e:
+        st.error(f"Error loading map assets: {e}")
 
-    # 2. Asset Paths
-    st.subheader("2. Earth Engine Asset Paths")
-    polygons_asset = st.text_input("Polygons Asset (Training)", value="projects/stgee-dataset/assets/export_predictors_polygons2")
-    points_asset = st.text_input("Points Asset (Events)", value="projects/stgee-dataset/assets/pointsDate")
-    prediction_asset = st.text_input("Prediction Asset (Target)", value="projects/stgee-dataset/assets/export_predictors_polygons2")
+    st.divider()
 
-    # 3. Data Column Settings
-    st.subheader("3. Data Column Settings")
-    col1, col2 = st.columns(2)
-    with col1:
-        DATE_COLUMN = st.text_input("Date Column Name", value='formatted_date')
-    with col2:
-        LANDSLIDE_COLUMN = st.text_input("Landslide ID Column", value='id')
-
-    # 4. CSV Export Settings
-    st.subheader("4. CSV Export Settings")
-    CSV_EXPORT_MODE = st.selectbox("CSV Export Mode", options=['BEST_ONLY', 'ALL_DATA'], index=0)
-
-    # 5. Analysis Parameters
-    st.subheader("5. Analysis Parameters")
+    # B. SHOW TABS (Calibration, Validation, Prediction)
+    st.subheader("2. Modeling Pipeline")
     
-    # Date Input
-    default_date = datetime.date(2025, 11, 26)
-    FORECAST_DATE_FIXED = st.date_input("Forecast Date", value=default_date)
+    tab1, tab2, tab3 = st.tabs(["📊 Calibration", "⚖️ Validation", "🔮 Prediction"])
 
-    # Predictors (Text Area converted to List)
-    default_predictors = "Relief_mea, S_mean, VCv_mean, Hill_mean, NDVI_mean"
-    predictors_input = st.text_area("Static Predictors (comma separated)", value=default_predictors)
-    
-    # Convert string back to list for Python
-    STATIC_PREDICTORS = [x.strip() for x in predictors_input.split(',')]
+    with tab1:
+        st.markdown("#### Model Calibration")
+        st.write(f"Optimization Range: **{config['min_days']} - {config['max_days']} days**")
+        if st.button("Run Calibration"):
+            st.write("🔄 Calibration process started... (Logic to be implemented)")
+            # Qui inseriresti la logica di calibrazione usando config['polygons_asset'], ecc.
 
-    # Rainfall Range
-    st.markdown("**Rainfall Window Search Range (Days)**")
-    c1, c2 = st.columns(2)
-    with c1:
-        MIN_DAYS = st.number_input("Min Days", min_value=1, value=1)
-    with c2:
-        MAX_DAYS = st.number_input("Max Days", min_value=1, value=30)
+    with tab2:
+        st.markdown("#### Cross-Validation")
+        if st.button("Run Validation"):
+            st.write("🔄 Validation process started... (Logic to be implemented)")
 
-    st.markdown("---")
-    
-    # THE START BUTTON
-    submitted = st.form_submit_button("🚀 Start Analysis", type="primary")
-
-# --- ACTION AFTER CLICK ---
-if submitted:
-    # Save to Session State (Memory)
-    st.session_state['config'] = {
-        'project': EE_PROJECT,
-        'assets': {'poly': polygons_asset, 'pts': points_asset, 'pred': prediction_asset},
-        'cols': {'date': DATE_COLUMN, 'ls': LANDSLIDE_COLUMN},
-        'csv_mode': CSV_EXPORT_MODE,
-        'forecast_date': FORECAST_DATE_FIXED,
-        'predictors': STATIC_PREDICTORS,
-        'range': (MIN_DAYS, MAX_DAYS)
-    }
-    
-    # Print the confirmation logs as requested
-    st.success("Configuration Saved.")
-    st.code(f"""
-    Project: {EE_PROJECT}
-    CSV Mode: {CSV_EXPORT_MODE}
-    Rainfall Optimization Range: {MIN_DAYS} to {MAX_DAYS} days.
-    Static Predictors: {STATIC_PREDICTORS}
-    """)
-    
-    st.info("System is ready. (Logic for next steps would go here)")
+    with tab3:
+        st.markdown("#### Prediction")
+        st.write(f"Target Date: **{config['forecast_date']}**")
+        if st.button("Run Prediction"):
+            st.write("🔄 Prediction process started... (Logic to be implemented)")
