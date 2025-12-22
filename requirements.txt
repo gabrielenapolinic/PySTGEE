@@ -1,10 +1,10 @@
 streamlit
 google-auth
 google-auth-oauthlib
-gspread
-geemap
 earthengine-api
+geemap
 pandas
 numpy
 scikit-learn
 plotly
+gspread
