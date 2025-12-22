@@ -15,12 +15,12 @@ def get_gcp_credentials():
         st.stop()
 
     # 2. Load the secrets dictionary
-    # We use dict() to ensure it's a standard dictionary format
+    # We use dict() to ensure it's a standard dictionary format compatible with the library
     creds_dict = dict(st.secrets["gcp_service_account"])
 
     # 3. Define Scopes
     # These scopes allow full access to Cloud Platform services.
-    # Adjust strictness based on your security needs (e.g., read-only for Sheets).
+    # Essential for accessing Sheets, Drive, or BigQuery.
     scopes = [
         "https://www.googleapis.com/auth/cloud-platform",
         "https://www.googleapis.com/auth/spreadsheets",
@@ -50,11 +50,11 @@ def main():
         st.success("✅ Authentication successful!")
         
         # Display safe information to verify the correct account is loaded
+        # Note: We only access attributes that are guaranteed to exist on the credentials object
         st.subheader("Account Details")
         st.json({
             "project_id": creds.project_id,
-            "service_account_email": creds.service_account_email,
-            "token_uri": creds.token_uri
+            "service_account_email": creds.service_account_email
         })
 
         # --- Example: How to use with Google BigQuery (Commented out) ---
