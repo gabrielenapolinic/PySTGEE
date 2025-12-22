@@ -222,7 +222,7 @@ def fetch_prediction_data(target_date, best_days_n):
 
 # --- MAIN GUI (RUN APP) ---
 def run_app():
-    st.title("🏔️ PySTGEE: Landslide Modeling")
+    st.title("PySTGEE")
     st.markdown("---")
 
     # Initialize Earth Engine
