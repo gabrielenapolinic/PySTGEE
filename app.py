@@ -20,46 +20,63 @@ and predict landslide susceptibility in real-time.
 # --- 2. INTERACTIVE GEE AUTHENTICATION ---
 def check_gee_auth():
     """
-    Checks if the user is authenticated.
-    If not, it stops the app and displays a Login button.
+    Handles authentication using Streamlit Secrets (for Cloud) 
+    or Local flow (for PC).
     """
-    # Default Project ID (Change this to your actual GEE Project ID)
-    DEFAULT_PROJECT = 'stgee-dataset' 
+    DEFAULT_PROJECT = 'stgee-dataset' # Tuo progetto
 
+    # 1. Try loading from Streamlit Secrets (Best for Cloud)
+    if "EARTHENGINE_TOKEN" in st.secrets:
+        try:
+            import json
+            from google.oauth2.credentials import Credentials
+            
+            # Read token from secrets
+            token_data = st.secrets["EARTHENGINE_TOKEN"]
+            
+            # Reconstruct credentials (depends on how you saved them)
+            # Option A: If you pasted the content of credentials file directly
+            if isinstance(token_data, str):
+                # If it's a string, try parsing it as JSON (common mistake)
+                try:
+                    token_dict = json.loads(token_data)
+                    creds = Credentials.from_authorized_user_info(token_dict)
+                except:
+                    # Maybe it's just the refresh token string?
+                    # Let's assume standard local flow wasn't used.
+                    st.error("Invalid Secret Format.")
+                    st.stop()
+            else:
+                # Streamlit parses TOML automatically into a dict
+                creds = Credentials.from_authorized_user_info(dict(token_data))
+            
+            ee.Initialize(credentials=creds, project=DEFAULT_PROJECT)
+            return True
+        except Exception as e:
+            st.warning(f"Secrets found but init failed: {e}")
+
+    # 2. Try Standard Local Initialization (Works on PC, fails fast on Cloud)
     try:
-        # 1. Try to initialize automatically
         ee.Initialize(project=DEFAULT_PROJECT)
         return True
-    except Exception as e:
-        # 2. If initialization fails, show the login UI
-        st.warning("⚠️ Google Earth Engine access not detected.")
-        
-        st.markdown(f"""
-        ### Authentication Required
-        To use this application, you must authenticate with your Google Earth Engine account.
-        
-        **Running Locally?** Click the button below to open the Google Login window.
-        """)
-        
-        # Interactive Button
-        if st.button("🔐 Click here to Authenticate"):
-            try:
-                # This opens the browser for OAuth
-                ee.Authenticate()
-                # Initialize after successful login
-                ee.Initialize(project=DEFAULT_PROJECT)
-                st.success("Authentication successful! Reloading...")
-                st.rerun()
-            except Exception as auth_error:
-                st.error(f"Login failed: {auth_error}")
-                st.info("If the button doesn't work, try running `earthengine authenticate` in your terminal.")
-        
-        # Stop the app here until logged in
-        st.stop()
+    except Exception:
+        pass
 
-# Run the check immediately at startup
-check_gee_auth()
-
+    # 3. If we are here, we are NOT authenticated. Show Login Button.
+    st.warning("⚠️ Google Earth Engine access not detected.")
+    st.markdown("### Authentication Required")
+    
+    if st.button("🔐 Authenticate via Browser"):
+        try:
+            ee.Authenticate()
+            ee.Initialize(project=DEFAULT_PROJECT)
+            st.success("Logged in! Reloading...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Login failed: {e}")
+    
+    # IMPORTANT: Stop execution here to prevent 503 Timeout loops
+    st.stop()
 # --- 3. SIDEBAR CONFIGURATION ---
 st.sidebar.header("1. Data Assets")
 
