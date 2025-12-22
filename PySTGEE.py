@@ -10,40 +10,56 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_predict, StratifiedKFold
 from sklearn.metrics import roc_curve, auc, confusion_matrix, f1_score, cohen_kappa_score, accuracy_score
 import concurrent.futures
+import re
+import base64
 
 # --- CELL 1: USER CONFIGURATION ---
-# 1. Earth Engine Project Configuration
 EE_PROJECT = 'stgee-dataset'
-
-# 2. Earth Engine Asset Paths
 POLYGONS_ASSET = "projects/stgee-dataset/assets/export_predictors_polygons2"
 POINTS_ASSET = "projects/stgee-dataset/assets/pointsDate"
 PREDICTION_ASSET = "projects/stgee-dataset/assets/export_predictors_polygons2"
 
-# 3. Data Column Settings
 DATE_COLUMN = 'formatted_date'
 LANDSLIDE_COLUMN = 'id'
+CSV_EXPORT_MODE = 'BEST_ONLY'
+FORECAST_DATE_FIXED = '2025-11-26'
 
-# 4. Analysis Parameters
 STATIC_PREDICTORS = ['Relief_mea', 'S_mean', 'VCv_mean', 'Hill_mean', 'NDVI_mean']
 MIN_DAYS = 1
 MAX_DAYS = 30
 
+# --- CELL 3: PALETTES ---
+VIS_PALETTE = [
+    '#006b0b', '#1b7b25', '#4e9956', '#dbeadd', '#ffffff',
+    '#f0b2ae', '#eb958f', '#df564d', '#d10e00'
+]
+PALETTE_CONFUSION = ['#D10E00', '#DF564D', '#DBEADD', '#006B0B']
+
+# --- LOGGING UTILS ---
+def log(message):
+    if 'logs' not in st.session_state:
+        st.session_state['logs'] = []
+    st.session_state['logs'].append(str(message))
+
+def render_log_console():
+    st.markdown("**OPERATION LOG**")
+    if 'logs' in st.session_state and st.session_state['logs']:
+        st.code("\n".join(st.session_state['logs']), language="text")
+    else:
+        st.code("Ready...", language="text")
+
 # --- AUTHENTICATION ---
 @st.cache_resource
 def initialize_ee():
-    """Authenticates and initializes Earth Engine."""
     try:
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
             credentials = service_account.Credentials.from_service_account_info(
-                creds_dict, 
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                creds_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             ee.Initialize(credentials, project=EE_PROJECT)
             return True
         else:
-            # Fallback for local environments already authenticated via CLI
             ee.Initialize(project=EE_PROJECT)
             return True
     except Exception as e:
@@ -52,14 +68,21 @@ def initialize_ee():
 
 # --- HELPER FUNCTIONS ---
 def add_numeric_id(feature):
-    """Adds a numeric ID column for raster mapping."""
     str_id = ee.String(feature.get('id'))
     num_str = str_id.replace(r'[^0-9]', '', 'g')
     num_val = ee.Algorithms.If(num_str.length().gt(0), ee.Number.parse(num_str), 0)
     return feature.set('NUM_ID', num_val)
 
-def calculate_metrics(y_true, y_probs):
-    """Calculates advanced metrics (AUC, F1, Kappa, Youden)."""
+def calc_confusion_class(row, pred_col, true_col='P/A'):
+    p = int(row[pred_col])
+    t = int(row[true_col])
+    if p == 1 and t == 0: return 0 # FP
+    if p == 0 and t == 0: return 1 # TN
+    if p == 0 and t == 1: return 2 # FN
+    if p == 1 and t == 1: return 3 # TP
+    return 1
+
+def calculate_advanced_metrics(y_true, y_probs):
     fpr, tpr, roc_thresh = roc_curve(y_true, y_probs)
     roc_auc = auc(fpr, tpr)
     youden_scores = tpr - fpr
@@ -72,43 +95,42 @@ def calculate_metrics(y_true, y_probs):
     return {
         'auc': roc_auc, 'best_thresh': best_thresh,
         'f1': f1, 'kappa': kappa, 'acc': acc,
+        'youden': youden_scores[best_idx],
         'fpr': fpr, 'tpr': tpr, 'best_idx': best_idx, 
-        'y_pred_opt': y_pred_opt,
-        'youden': youden_scores[best_idx]
+        'y_pred_opt': y_pred_opt
     }
 
-# --- DATA DOWNLOAD ENGINE ---
+def filter_dataframe_for_export(df):
+    if CSV_EXPORT_MODE == 'ALL_DATA': return df
+    cols_to_keep = ['id', 'date', 'P/A', 'NUM_ID']
+    if 'final_predictors' in st.session_state:
+        cols_to_keep.extend(st.session_state['final_predictors'])
+    result_cols = ['calib_prob', 'calib_pred', 'conf_class', 'valid_prob', 'valid_pred', 'valid_conf', 'SI', 'Prediction']
+    for rc in result_cols:
+        if rc in df.columns: cols_to_keep.append(rc)
+    final_cols = [c for c in cols_to_keep if c in df.columns]
+    return df[final_cols]
+
+# --- CELL 4: TRAINING ENGINE ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def download_training_data():
-    """
-    Downloads training data for all days between MIN_DAYS and MAX_DAYS.
-    Uses ThreadPoolExecutor for concurrent GEE requests.
-    """
     landPoints = ee.FeatureCollection(POINTS_ASSET)
     predictors_polygons = ee.FeatureCollection(POLYGONS_ASSET).map(add_numeric_id)
-    
-    # Get distinct dates
     raw_dates = landPoints.aggregate_array(DATE_COLUMN).distinct().getInfo()
     dates_list = [str(d)[:10] for d in raw_dates]
     
-    # We use st.empty to show progress updates inside the cached function context
-    status_text = st.empty()
-    status_text.info(f"📅 Found {len(dates_list)} event dates. Downloading rainfall data...")
+    # We return the list length to log it outside (since logging inside cached func is tricky)
+    meta_info = f"Event Dates found: {len(dates_list)}\nRetrieving rainfall data for windows {MIN_DAYS}-{MAX_DAYS} days..."
     
-    # Internal function for threading
     def process_date(date_str):
         try:
             d = ee.Date(date_str)
             gpm = ee.ImageCollection('JAXA/GPM_L3/GSMaP/v8/operational').select('hourlyPrecipRateGC')
-            
-            # Create rainfall bands for 1 to MAX_DAYS
             rain_bands = [
                 gpm.filterDate(d.advance(-i, 'day'), d).sum().unmask(0).rename(f'Rn{i}')
                 for i in range(MIN_DAYS, MAX_DAYS + 1)
             ]
             combined = ee.Image.cat(rain_bands)
-            
-            # Filter points for this date
             todays_points = landPoints.filter(ee.Filter.eq(DATE_COLUMN, date_str))
             
             def map_polygons(poly):
@@ -116,78 +138,79 @@ def download_training_data():
                 return poly.set({'P/A': ee.Algorithms.If(count.gt(0), 1, 0), 'date': date_str})
             
             labeled_polys = predictors_polygons.map(map_polygons)
-            
             stats = combined.reduceRegions(
                 collection=labeled_polys,
                 reducer=ee.Reducer.mean().combine(ee.Reducer.stdDev(), sharedInputs=True),
                 scale=1000, tileScale=16
             )
-            
             df_day = geemap.ee_to_df(stats)
             if df_day.empty: return None
-            
-            # Rename columns from GEE default to cleaner format
             rename_dict = {f'Rn{i}_{suffix}': f'Rn{i}_{m}'
                            for i in range(MIN_DAYS, MAX_DAYS + 1)
                            for suffix, m in [('mean', 'm'), ('stdDev', 's')]}
             return df_day.rename(columns=rename_dict)
-        except Exception:
-            return None
+        except Exception: return None
 
     results = []
-    # Progress Bar Logic
     prog_bar = st.progress(0)
+    status = st.empty()
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(process_date, d): d for d in dates_list}
         completed = 0
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
-            if res is not None:
-                results.append(res)
+            if res is not None: results.append(res)
             completed += 1
             prog_bar.progress(completed / len(dates_list))
-    
-    status_text.empty() # Clear status
-    prog_bar.empty()    # Clear bar
+            status.text(f"...processed {completed}/{len(dates_list)} dates")
+            
+    prog_bar.empty()
+    status.empty()
 
-    if not results:
-        return pd.DataFrame()
-
+    if not results: return pd.DataFrame(), meta_info
     final_df = pd.concat(results, ignore_index=True)
-    
-    # Deterministic Sorting
     if 'date' in final_df.columns and 'id' in final_df.columns:
         final_df = final_df.sort_values(by=['date', 'id']).reset_index(drop=True)
-        
-    # Ensure static predictors exist
     for col in STATIC_PREDICTORS:
         if col not in final_df.columns: final_df[col] = 0
         
-    return final_df.fillna(0)
+    return final_df.fillna(0), meta_info
 
-# --- PREDICTION ENGINE ---
-def fetch_prediction_data(target_date, best_days_n):
-    """
-    Downloads rainfall data for a specific prediction date.
-    Includes logic to handle missing recent data (latency).
-    """
+# --- CELL 5: PREDICTION ENGINE ---
+def get_prediction_data_dynamic(target_date, best_days_n):
     target_date_ee = ee.Date(target_date)
     prediction_area_shp = ee.FeatureCollection(PREDICTION_ASSET).map(add_numeric_id)
     gpm = ee.ImageCollection('JAXA/GPM_L3/GSMaP/v8/operational').select('hourlyPrecipRateGC')
 
-    # Find most recent data
     available_col = gpm.filterDate('2000-01-01', target_date_ee.advance(1, 'day')) \
                        .sort('system:time_start', False).limit(1)
     
-    if available_col.size().getInfo() > 0:
+    has_data = available_col.size().getInfo() > 0
+    log_msgs = ["-"*45, "SATELLITE DATA REPORT", "-"*45, f"Requested Date : {target_date}"]
+    
+    if has_data:
         latest_img = available_col.first()
-        found_date = ee.Date(latest_img.get('system:time_start'))
+        found_date_ms = latest_img.get('system:time_start').getInfo()
+        found_date = ee.Date(found_date_ms)
+        found_date_str = found_date.format('YYYY-MM-dd').getInfo()
+        
+        log_msgs.append(f"Source Image   : JAXA GSMaP v8 Operational")
+        log_msgs.append(f"Available Date : {found_date_str}")
+        
+        if found_date_str != target_date:
+            diff = ee.Date(target_date).difference(found_date, 'day').getInfo()
+            log_msgs.append(f"STATUS         : FALLBACK ACTIVATED")
+            log_msgs.append(f"   (Data lag of {int(diff)} days)")
+        else:
+            log_msgs.append(f"STATUS         : EXACT MATCH")
+        
+        log_msgs.append("-" * 45)
         rain_img = gpm.filterDate(found_date.advance(-best_days_n, 'day'), found_date.advance(1, 'day')) \
                       .sum().unmask(0).rename(f'Rn{best_days_n}')
-        st.info(f"ℹ️ Satellite Data used ending on: {found_date.format('YYYY-MM-dd').getInfo()}")
     else:
-        st.warning("⚠️ No satellite data found. Using 0 rainfall.")
+        log_msgs.append("STATUS         : NO DATA FOUND (Using 0 Rain)")
+        log_msgs.append("-" * 45)
         rain_img = ee.Image.constant(0).rename(f'Rn{best_days_n}')
 
     stats = rain_img.reduceRegions(
@@ -195,217 +218,217 @@ def fetch_prediction_data(target_date, best_days_n):
         reducer=ee.Reducer.mean().combine(ee.Reducer.stdDev(), sharedInputs=True),
         scale=1000, tileScale=16
     )
-    
     df = geemap.ee_to_df(stats)
     
-    # Robust Renaming
     target_mean = f'Rn{best_days_n}_m'
     target_std = f'Rn{best_days_n}_s'
     
-    # Check for various GEE output names
     for col in [f'Rn{best_days_n}_mean', 'hourlyPrecipRateGC_mean', 'mean']:
-        if col in df.columns:
-            df[target_mean] = df[col]
-            break
+        if col in df.columns: df[target_mean] = df[col]; break
     if target_mean not in df.columns: df[target_mean] = 0
-            
     for col in [f'Rn{best_days_n}_stdDev', 'hourlyPrecipRateGC_stdDev', 'stdDev']:
-        if col in df.columns:
-            df[target_std] = df[col]
-            break
+        if col in df.columns: df[target_std] = df[col]; break
     if target_std not in df.columns: df[target_std] = 0
 
     for col in STATIC_PREDICTORS:
         if col not in df.columns: df[col] = 0
         
-    return df
+    return df, log_msgs
 
-# --- MAIN GUI (RUN APP) ---
+# --- MAPPING FUNCTION ---
+def map_values(df, val_col, layer_name, palette):
+    def clean_id_py(val):
+        s = str(val)
+        digits = re.sub(r'[^0-9]', '', s)
+        return int(digits) if digits else 0
+
+    df_map = df.copy()
+    df_map['NUM_ID_PY'] = df_map['id'].apply(clean_id_py)
+
+    if layer_name.startswith("Confusion"):
+        df_flat = df_map.sort_values('date').drop_duplicates(subset='NUM_ID_PY', keep='last')
+    else:
+        df_flat = df_map.groupby('NUM_ID_PY')[val_col].max().reset_index()
+
+    id_list = df_flat['NUM_ID_PY'].tolist()
+    val_list = df_flat[val_col].tolist()
+
+    polygons_base = ee.FeatureCollection(PREDICTION_ASSET).map(add_numeric_id)
+    polygons_img = polygons_base.reduceToImage(properties=['NUM_ID'], reducer=ee.Reducer.first())
+    result_img = polygons_img.remap(id_list, val_list).rename('value')
+    result_img = result_img.updateMask(result_img.gte(0))
+
+    vis = {'palette': palette, 'min': 0, 'max': 3 if layer_name.startswith("Confusion") else 1}
+    
+    # We return the layer object and vis params instead of adding directly
+    return result_img, vis
+
+# --- MAIN RUNNER (Corresponds to Cell 6) ---
 def run_app():
-    st.title("PySTGEE")
-    st.markdown("---")
+    st.title("PySTGEE: Landslide Modeling")
+    
+    # Log Console
+    render_log_console()
 
-    # Initialize Earth Engine
-    if not initialize_ee():
-        st.stop()
-        
-    # --- SESSION STATE INITIALIZATION ---
+    # Initialize
+    if not initialize_ee(): st.stop()
+
+    # Session State
     if 'model' not in st.session_state: st.session_state['model'] = None
     if 'best_window' not in st.session_state: st.session_state['best_window'] = None
     if 'final_predictors' not in st.session_state: st.session_state['final_predictors'] = []
     if 'training_df' not in st.session_state: st.session_state['training_df'] = None
 
-    # --- TABS LAYOUT ---
-    tab1, tab2, tab3 = st.tabs(["1. Model Calibration", "2. Validation", "3. Forecast Map"])
+    # Tabs (mimicking Buttons flow)
+    tab1, tab2, tab3 = st.tabs(["1. Calibration", "2. Validation", "3. Forecast"])
 
-    # --- TAB 1: CALIBRATION ---
+    # --- CALIBRATION ---
     with tab1:
-        st.header("Step 1: Train & Optimize Model")
-        st.write("This process downloads historical data and tests rainfall windows (1-30 days) to find the best predictor.")
-        
-        if st.button("🚀 Start Training Process", type="primary"):
-            # 1. Download
-            with st.spinner("Downloading training data from Earth Engine..."):
-                df = download_training_data()
-                st.session_state['training_df'] = df
+        if st.button("Run Calibration"):
+            st.session_state['logs'] = [] # Clear logs
+            log(f"Loading assets...")
             
-            if df is not None and not df.empty:
-                st.success("✅ Data Downloaded Successfully.")
-                
-                # 2. Optimization Loop
+            with st.spinner("Downloading Data..."):
+                df, meta = download_training_data()
+                st.session_state['training_df'] = df
+                log(meta)
+            
+            if not df.empty:
                 y = df['P/A']
                 best_auc = 0
                 best_days = MIN_DAYS
                 
-                progress_opt = st.progress(0)
-                status_opt = st.empty()
+                log(f"Starting Optimization: Scanning windows {MIN_DAYS}-{MAX_DAYS} days...")
+                log("-" * 30)
                 
-                # Loop through days to find best AUC
+                progress = st.progress(0)
                 for days in range(MIN_DAYS, MAX_DAYS + 1):
                     cols = [f'Rn{days}_m', f'Rn{days}_s']
                     if not all(c in df.columns for c in cols): continue
-                    
                     X_temp = df[cols].fillna(0)
-                    # Lightweight RF for speed
-                    rf = RandomForestClassifier(n_estimators=30, max_depth=5, random_state=42, class_weight='balanced')
+                    rf = RandomForestClassifier(n_estimators=50, max_depth=8, random_state=42, class_weight='balanced')
                     rf.fit(X_temp, y)
                     probs = rf.predict_proba(X_temp)[:, 1]
                     fpr, tpr, _ = roc_curve(y, probs)
                     score = auc(fpr, tpr)
                     
+                    log(f"   > Day {days}: AUC = {score:.4f}")
                     if score > best_auc:
                         best_auc = score
                         best_days = days
-                    
-                    status_opt.text(f"Testing {days} Days... Current Best AUC: {best_auc:.4f}")
-                    progress_opt.progress((days - MIN_DAYS) / (MAX_DAYS - MIN_DAYS))
-                
-                status_opt.empty()
-                progress_opt.empty()
-                
-                # 3. Final Model Training
+                    progress.progress((days - MIN_DAYS) / (MAX_DAYS - MIN_DAYS))
+                progress.empty()
+
                 st.session_state['best_window'] = best_days
                 st.session_state['final_predictors'] = STATIC_PREDICTORS + [f'Rn{best_days}_m', f'Rn{best_days}_s']
                 
-                st.success(f"🏆 Optimization Complete! Best Window: **{best_days} Days** (AUC: {best_auc:.4f})")
-                
-                with st.spinner("Training Final Robust Model..."):
-                    X = df[st.session_state['final_predictors']].fillna(0)
-                    rf_final = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, oob_score=True, class_weight='balanced')
-                    rf_final.fit(X, y)
-                    st.session_state['model'] = rf_final
-                
-                # 4. Feature Importance Plot
-                imp = pd.Series(rf_final.feature_importances_, index=st.session_state['final_predictors']).sort_values()
-                fig_imp = go.Figure(go.Bar(x=imp.values, y=imp.index, orientation='h', marker=dict(color='#00BFFF')))
-                fig_imp.update_layout(title="Feature Importance", height=400, margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_imp, use_container_width=True)
+                log("-" * 30)
+                log(f"FINAL SELECTION:\n   Best Window: {best_days} Days\n   Max AUC:     {best_auc:.4f}")
+                log("-" * 30)
+                log("Training final robust model...")
+                st.experimental_rerun() # Refresh logs
 
-    # --- TAB 2: VALIDATION ---
+                X = df[st.session_state['final_predictors']].fillna(0)
+                rf_final = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, oob_score=True, class_weight='balanced')
+                rf_final.fit(X, y)
+                st.session_state['model'] = rf_final
+
+                # Metrics & Plots
+                df['calib_prob'] = rf_final.predict_proba(X)[:, 1]
+                m = calculate_advanced_metrics(y, df['calib_prob'])
+                df['calib_pred'] = m['y_pred_opt']
+                df['conf_class'] = df.apply(lambda r: calc_confusion_class(r, 'calib_pred'), axis=1)
+
+                st.subheader("Calibration Results")
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("AUC", f"{m['auc']:.4f}")
+                c2.metric("Accuracy", f"{m['acc']:.4f}")
+                c3.metric("F1 Score", f"{m['f1']:.4f}")
+
+                # Plots
+                imp = pd.Series(rf_final.feature_importances_, index=st.session_state['final_predictors']).sort_values()
+                fig = make_subplots(rows=2, cols=1, subplot_titles=("Feature Importance", "Confusion Matrix"))
+                fig.add_trace(go.Bar(x=imp.values, y=imp.index, orientation='h'), row=1, col=1)
+                cm = confusion_matrix(y, m['y_pred_opt'])
+                fig.add_trace(go.Heatmap(z=cm, x=['Pred:0', 'Pred:1'], y=['True:0', 'True:1'], colorscale='Blues', texttemplate="%{z}"), row=2, col=1)
+                fig.update_layout(height=600, showlegend=False)
+                st.plotly_chart(fig)
+
+                # Maps
+                st.subheader("Maps")
+                m_calib = geemap.Map(height=500)
+                m_calib.centerObject(ee.FeatureCollection(PREDICTION_ASSET), 10)
+                
+                layer1, vis1 = map_values(df, 'calib_prob', 'Calibration Map', VIS_PALETTE)
+                layer2, vis2 = map_values(df, 'conf_class', 'Confusion Calibration', PALETTE_CONFUSION)
+                
+                m_calib.addLayer(layer1, vis1, 'Calibration Map')
+                m_calib.addLayer(layer2, vis2, 'Confusion Calibration')
+                m_calib.to_streamlit()
+                
+                # Download
+                df_export = filter_dataframe_for_export(df)
+                csv = df_export.to_csv(index=False).encode('utf-8')
+                st.download_button("Download Calibration CSV", csv, "calibration.csv", "text/csv")
+
+    # --- VALIDATION ---
     with tab2:
-        st.header("Step 2: Cross-Validation")
-        
-        if st.session_state['model'] is None:
-            st.warning("⚠️ Please train the model in Tab 1 first.")
-        else:
-            if st.button("📊 Run Cross-Validation"):
+        if st.button("Run Validation"):
+            if not st.session_state['model']:
+                st.error("Run Calibration first!")
+            else:
+                log("Starting Validation process...")
                 df = st.session_state['training_df']
                 X = df[st.session_state['final_predictors']].fillna(0)
                 y = df['P/A']
                 
-                with st.spinner("Running 10-Fold Stratified Cross Validation..."):
-                    y_probs = cross_val_predict(st.session_state['model'], X, y, cv=StratifiedKFold(n_splits=10), method='predict_proba')[:, 1]
-                    m = calculate_metrics(y, y_probs)
-                
-                # Metrics Grid
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("AUC", f"{m['auc']:.3f}")
-                c2.metric("Accuracy", f"{m['acc']:.3f}")
-                c3.metric("F1 Score", f"{m['f1']:.3f}")
-                c4.metric("Kappa", f"{m['kappa']:.3f}")
-                
-                # Plots
-                col_plots1, col_plots2 = st.columns(2)
-                
-                with col_plots1:
-                    # ROC
-                    fig_roc = go.Figure()
-                    fig_roc.add_trace(go.Scatter(x=m['fpr'], y=m['tpr'], fill='tozeroy', name='ROC', line=dict(color='#FF4B4B')))
-                    fig_roc.add_trace(go.Scatter(x=[0, 1], y=[0, 1], line=dict(dash='dash', color='black'), showlegend=False))
-                    fig_roc.update_layout(title="ROC Curve", height=400)
-                    st.plotly_chart(fig_roc, use_container_width=True)
-                
-                with col_plots2:
-                    # Confusion Matrix
-                    cm = confusion_matrix(y, m['y_pred_opt'])
-                    fig_cm = go.Figure(data=go.Heatmap(
-                        z=cm, x=['Pred 0', 'Pred 1'], y=['True 0', 'True 1'], 
-                        colorscale='Blues', texttemplate="%{z}", showscale=False
-                    ))
-                    fig_cm.update_layout(title="Confusion Matrix", height=400, yaxis=dict(autorange="reversed"))
-                    st.plotly_chart(fig_cm, use_container_width=True)
+                log("Running Cross-Validation (10-Folds)...")
+                y_probs = cross_val_predict(st.session_state['model'], X, y, cv=StratifiedKFold(n_splits=10), method='predict_proba')[:, 1]
+                m = calculate_advanced_metrics(y, y_probs)
+                log(f"Validation Done. AUC: {m['auc']:.4f}")
+                st.experimental_rerun()
 
-    # --- TAB 3: MAP ---
+                st.subheader("Validation Metrics")
+                st.write(f"**AUC:** {m['auc']:.4f} | **F1:** {m['f1']:.4f} | **Kappa:** {m['kappa']:.4f}")
+
+                df['valid_prob'] = y_probs
+                df['valid_pred'] = m['y_pred_opt']
+                df['valid_conf'] = df.apply(lambda r: calc_confusion_class(r, 'valid_pred'), axis=1)
+
+                m_valid = geemap.Map(height=500)
+                m_valid.centerObject(ee.FeatureCollection(PREDICTION_ASSET), 10)
+                l1, v1 = map_values(df, 'valid_prob', 'Validation Map', VIS_PALETTE)
+                l2, v2 = map_values(df, 'valid_conf', 'Confusion Validation', PALETTE_CONFUSION)
+                m_valid.addLayer(l1, v1, 'Validation Map')
+                m_valid.addLayer(l2, v2, 'Confusion Validation')
+                m_valid.to_streamlit()
+
+    # --- PREDICTION ---
     with tab3:
-        st.header("Step 3: Forecast Map")
-        
-        if st.session_state['model'] is None:
-            st.warning("⚠️ Please train the model in Tab 1 first.")
-        else:
-            col_date, col_btn = st.columns([2, 1])
-            with col_date:
-                forecast_date = st.date_input("Select Forecast Date", value=pd.to_datetime('today'))
-            with col_btn:
-                st.write("") # Spacer
-                st.write("") # Spacer
-                run_map_btn = st.button("🌍 Generate Map", type="primary")
-            
-            if run_map_btn:
-                with st.spinner("Fetching satellite data and computing risk map..."):
-                    # 1. Fetch Data
-                    df_pred = fetch_prediction_data(forecast_date.strftime('%Y-%m-%d'), st.session_state['best_window'])
+        f_date = st.date_input("Forecast Date", value=pd.to_datetime('today'))
+        if st.button("Run Prediction"):
+            if not st.session_state['model']:
+                st.error("Run Calibration first!")
+            else:
+                with st.spinner("Processing..."):
+                    df_pred, logs = get_prediction_data_dynamic(f_date.strftime('%Y-%m-%d'), st.session_state['best_window'])
+                    for l in logs: log(l)
                     
-                    # 2. Predict
                     X_pred = df_pred[st.session_state['final_predictors']].fillna(0)
                     probs = st.session_state['model'].predict_proba(X_pred)[:, 1]
-                    df_pred['probability'] = probs
+                    df_pred['SI'] = probs
                     
-                    # 3. Prepare Earth Engine Map
-                    # Clean IDs
-                    df_pred['id_clean'] = df_pred['id'].astype(str).str.replace(r'[^0-9]', '', regex=True).replace('', '0').astype(int)
+                    log(f"Prediction Done. Max Risk: {probs.max():.2f}")
+                    st.experimental_rerun()
                     
-                    id_list = df_pred['id_clean'].tolist()
-                    prob_list = df_pred['probability'].tolist()
+                    st.subheader(f"Prediction Map (Max Risk: {probs.max():.2f})")
+                    m_pred = geemap.Map(height=600)
+                    m_pred.centerObject(ee.FeatureCollection(PREDICTION_ASSET), 10)
+                    l_pred, v_pred = map_values(df_pred, 'SI', 'Prediction Map', VIS_PALETTE)
+                    m_pred.addLayer(l_pred, v_pred, 'Prediction Map')
+                    m_pred.to_streamlit()
                     
-                    # Load original polygons
-                    polygons_base = ee.FeatureCollection(PREDICTION_ASSET).map(add_numeric_id)
-                    
-                    # Reduce polygons to an image (Remap ID -> Probability)
-                    polys_img = polygons_base.reduceToImage(properties=['NUM_ID'], reducer=ee.Reducer.first())
-                    hazard_img = polys_img.remap(id_list, prob_list).rename('hazard')
-                    hazard_img = hazard_img.updateMask(hazard_img.gte(0)) # Mask background
-                    
-                    # 4. Render Map
-                    vis_params = {
-                        'min': 0, 
-                        'max': 1, 
-                        'palette': ['#006b0b', '#dbeadd', '#eb958f', '#d10e00']
-                    }
-                    
-                    m = geemap.Map(height=600)
-                    # Center map on the study area
-                    m.centerObject(polygons_base, 10)
-                    m.addLayer(hazard_img, vis_params, "Landslide Hazard Probability")
-                    m.add_colorbar(vis_params, label="Probability (0-1)")
-                    
-                    st.success(f"Map Generated. Max Risk Found: **{max(prob_list):.2f}**")
-                    m.to_streamlit(height=600)
-                    
-                    # 5. Download Button
-                    csv = df_pred[['id', 'probability']].to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Predictions (CSV)",
-                        data=csv,
-                        file_name=f"prediction_{forecast_date}.csv",
-                        mime="text/csv"
-                    )
+                    df_export = filter_dataframe_for_export(df_pred)
+                    csv = df_export.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download Prediction CSV", csv, "prediction.csv", "text/csv")
