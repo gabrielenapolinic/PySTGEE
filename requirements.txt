@@ -1,4 +1,6 @@
 streamlit
+google-auth
+google-auth-oauthlib
 geemap
 earthengine-api
 pandas
