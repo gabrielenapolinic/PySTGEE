@@ -67,7 +67,8 @@ def initialize_ee():
 
 # --- FUNZIONI UTILI ---
 def add_numeric_id(feature):
-    str_id = ee.String(feature.get('id'))
+    # Usa un fallback '0' se l'ID manca per evitare crash
+    str_id = ee.String(feature.get('id', '0'))
     num_str = str_id.replace(r'[^0-9]', '', 'g')
     num_val = ee.Algorithms.If(num_str.length().gt(0), ee.Number.parse(num_str), 0)
     return feature.set('NUM_ID', num_val)
@@ -233,12 +234,16 @@ def get_prediction_data_dynamic(target_date, best_days_n):
         
     return df, log_msgs
 
-# --- GESTIONE LAYER MAPPA ---
+# --- GESTIONE LAYER MAPPA (CRASH FIX) ---
 def get_map_layers(df, val_col, layer_name, palette):
-    """Prepara il layer ma NON lo aggiunge direttamente alla mappa (lo fa il render finale)."""
+    """
+    Prepara il layer ma NON lo aggiunge direttamente alla mappa.
+    FIX: Converte esplicitamente i tipi Numpy in tipi Python nativi per evitare crash di GEE JSON.
+    """
     def clean_id_py(val):
         s = str(val)
         digits = re.sub(r'[^0-9]', '', s)
+        # Assicura che ritorni un int Python puro
         return int(digits) if digits else 0
 
     df_map = df.copy()
@@ -249,8 +254,10 @@ def get_map_layers(df, val_col, layer_name, palette):
     else:
         df_flat = df_map.groupby('NUM_ID_PY')[val_col].max().reset_index()
 
-    id_list = df_flat['NUM_ID_PY'].tolist()
-    val_list = df_flat[val_col].tolist()
+    # FIX CRITICO: Forziamo la conversione in liste Python pure (int e float)
+    # GEE crasha se riceve numpy.int64 o numpy.float64
+    id_list = [int(x) for x in df_flat['NUM_ID_PY'].values]
+    val_list = [float(x) for x in df_flat[val_col].values]
 
     polygons_base = ee.FeatureCollection(PREDICTION_ASSET).map(add_numeric_id)
     polygons_img = polygons_base.reduceToImage(properties=['NUM_ID'], reducer=ee.Reducer.first())
@@ -270,21 +277,21 @@ def run_app():
     if 'logs' not in st.session_state:
         st.session_state['logs'] = []
     
-    # --- FASE 1: LAUNCHER (Il bottone "Run Analysis" originale) ---
+    # --- FASE 1: LAUNCHER (Il bottone "Run Analysis") ---
     if not st.session_state['analysis_active']:
         if st.button("Run Analysis", type="primary"):
             st.session_state['analysis_active'] = True
             st.rerun() # Ricarica per mostrare la Fase 2
 
-    # --- FASE 2: INTERFACCIA COMPLETA (Mappa + Controlli) ---
+    # --- FASE 2: INTERFACCIA COMPLETA ---
     else:
-        # 1. Autenticazione (Dopo il click su Run Analysis)
+        # 1. Autenticazione
         if not initialize_ee(): st.stop()
 
-        # 2. Console Log (Sempre visibile in alto)
+        # 2. Console Log
         render_log_console()
 
-        # 3. Controlli (Bottoni)
+        # 3. Controlli
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         with col1:
             btn_calib = st.button("Run Calibration")
@@ -295,16 +302,16 @@ def run_app():
         with col4:
             f_date = st.date_input("Date", value=pd.to_datetime('today'), label_visibility="collapsed")
 
-        # 4. Inizializza variabili di stato per dati e mappa
+        # 4. Inizializza variabili di stato
         if 'model' not in st.session_state: st.session_state['model'] = None
         if 'best_window' not in st.session_state: st.session_state['best_window'] = None
         if 'final_predictors' not in st.session_state: st.session_state['final_predictors'] = []
         if 'training_df' not in st.session_state: st.session_state['training_df'] = None
-        if 'active_layers' not in st.session_state: st.session_state['active_layers'] = [] # Qui salviamo i layer da mostrare
+        if 'active_layers' not in st.session_state: st.session_state['active_layers'] = [] 
         if 'metrics_html' not in st.session_state: st.session_state['metrics_html'] = ""
         if 'charts' not in st.session_state: st.session_state['charts'] = None
 
-        # 5. LOGICA DEI BOTTONI (Aggiorna solo lo stato, poi fa rerun)
+        # 5. LOGICA DEI BOTTONI
         
         # --- CALIBRATION ---
         if btn_calib:
@@ -356,13 +363,16 @@ def run_app():
 
                 st.session_state['metrics_html'] = f"<b>Calibration</b>: AUC={m['auc']:.3f} | Acc={m['acc']:.3f} | F1={m['f1']:.3f}"
                 
-                # PREPARA I LAYER E SALVALI NELLO STATO
-                l1, v1 = get_map_layers(df, 'calib_prob', 'Calibration Map', VIS_PALETTE)
-                l2, v2 = get_map_layers(df, 'conf_class', 'Confusion Calibration', PALETTE_CONFUSION)
-                st.session_state['active_layers'] = [
-                    (l1, v1, 'Calibration Map'),
-                    (l2, v2, 'Confusion Calibration')
-                ]
+                # PREPARA I LAYER
+                try:
+                    l1, v1 = get_map_layers(df, 'calib_prob', 'Calibration Map', VIS_PALETTE)
+                    l2, v2 = get_map_layers(df, 'conf_class', 'Confusion Calibration', PALETTE_CONFUSION)
+                    st.session_state['active_layers'] = [
+                        (l1, v1, 'Calibration Map'),
+                        (l2, v2, 'Confusion Calibration')
+                    ]
+                except Exception as e:
+                    log(f"ERROR creating map layers: {e}")
                 
                 # Grafici
                 imp = pd.Series(rf_final.feature_importances_, index=st.session_state['final_predictors']).sort_values()
@@ -372,7 +382,7 @@ def run_app():
                 fig.add_trace(go.Heatmap(z=cm, x=['Pred:0', 'Pred:1'], y=['True:0', 'True:1'], colorscale='Blues', texttemplate="%{z}"), row=2, col=1)
                 fig.update_layout(height=500, showlegend=False)
                 st.session_state['charts'] = fig
-                st.rerun() # FORZA IL RIDISEGNO DI TUTTO CON I NUOVI DATI
+                st.rerun()
 
         # --- VALIDATION ---
         if btn_valid:
@@ -391,12 +401,15 @@ def run_app():
                 df['valid_conf'] = df.apply(lambda r: calc_confusion_class(r, 'valid_pred'), axis=1)
                 
                 st.session_state['metrics_html'] = f"<b>Validation</b>: AUC={m['auc']:.3f} | F1={m['f1']:.3f}"
-                l1, v1 = get_map_layers(df, 'valid_prob', 'Validation Map', VIS_PALETTE)
-                l2, v2 = get_map_layers(df, 'valid_conf', 'Confusion Validation', PALETTE_CONFUSION)
-                st.session_state['active_layers'] = [
-                    (l1, v1, 'Validation Map'),
-                    (l2, v2, 'Confusion Validation')
-                ]
+                try:
+                    l1, v1 = get_map_layers(df, 'valid_prob', 'Validation Map', VIS_PALETTE)
+                    l2, v2 = get_map_layers(df, 'valid_conf', 'Confusion Validation', PALETTE_CONFUSION)
+                    st.session_state['active_layers'] = [
+                        (l1, v1, 'Validation Map'),
+                        (l2, v2, 'Confusion Validation')
+                    ]
+                except Exception as e:
+                    log(f"ERROR creating map layers: {e}")
                 st.rerun()
 
         # --- PREDICTION ---
@@ -412,30 +425,36 @@ def run_app():
                     log(f"Max Risk: {probs.max():.2f}")
                     
                     st.session_state['metrics_html'] = f"<b>Prediction</b>: Max Risk={probs.max():.2f}"
-                    l_pred, v_pred = get_map_layers(df_pred, 'SI', 'Prediction Map', VIS_PALETTE)
-                    st.session_state['active_layers'] = [(l_pred, v_pred, 'Prediction Map')]
+                    try:
+                        l_pred, v_pred = get_map_layers(df_pred, 'SI', 'Prediction Map', VIS_PALETTE)
+                        st.session_state['active_layers'] = [(l_pred, v_pred, 'Prediction Map')]
+                    except Exception as e:
+                        log(f"ERROR creating map layers: {e}")
                     st.rerun()
 
-        # 6. RENDERIZZAZIONE FINALE (Sempre eseguita)
+        # 6. RENDERIZZAZIONE FINALE
         
-        # Risultati testuali/grafici
+        # Risultati
         if st.session_state['metrics_html']:
             st.markdown(st.session_state['metrics_html'], unsafe_allow_html=True)
         if st.session_state['charts']:
             st.plotly_chart(st.session_state['charts'], use_container_width=True)
 
-        # --- MAPPA (Disegnata SEMPRE alla fine, leggendo dallo STATO) ---
-        m = geemap.Map(height=600)
-        
-        # 1. Aggiungi SEMPRE l'Area di Studio (come faceva activate_analysis)
-        predictors_polygons = ee.FeatureCollection(POLYGONS_ASSET)
-        m.centerObject(predictors_polygons, 10)
-        m.addLayer(predictors_polygons.style(**{'color': 'gray', 'fillColor': '00000000'}), {}, 'Study Area')
-        
-        # 2. Aggiungi i layer calcolati (se presenti nello stato)
-        for layer, vis, name in st.session_state['active_layers']:
-            m.addLayer(layer, vis, name)
-            if not name.startswith("Confusion"):
-                m.add_colorbar(vis, label=name)
-        
-        m.to_streamlit()
+        # --- MAPPA ---
+        try:
+            m = geemap.Map(height=600)
+            
+            # Area di Studio
+            predictors_polygons = ee.FeatureCollection(POLYGONS_ASSET)
+            m.centerObject(predictors_polygons, 10)
+            m.addLayer(predictors_polygons.style(**{'color': 'gray', 'fillColor': '00000000'}), {}, 'Study Area')
+            
+            # Layer Attivi
+            for layer, vis, name in st.session_state['active_layers']:
+                m.addLayer(layer, vis, name)
+                if not name.startswith("Confusion"):
+                    m.add_colorbar(vis, label=name)
+            
+            m.to_streamlit()
+        except Exception as e:
+            st.error(f"Error rendering map: {e}")
