@@ -19,10 +19,6 @@ and predict landslide susceptibility in real-time.
 
 # --- 2. INTERACTIVE GEE AUTHENTICATION ---
 def check_gee_auth():
-    """
-    Handles authentication using Streamlit Secrets (for Cloud) 
-    or Local flow (for PC).
-    """
     DEFAULT_PROJECT = 'stgee-dataset' # Tuo progetto
 
     # 1. Try loading from Streamlit Secrets (Best for Cloud)
