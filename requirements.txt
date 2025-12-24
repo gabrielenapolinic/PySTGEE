@@ -1,8 +1,0 @@
-streamlit
-earthengine-api
-geemap
-pandas
-numpy
-scikit-learn
-plotly
-google-auth
