@@ -41,7 +41,7 @@ Upon execution, the script authenticates with GEE, loads user-defined vector ass
 
 ### 2. Model Calibration
 The calibration phase involves training the Random Forest model using a dataset constructed from historical events. The dashboard displays the Feature Importance plot and the Receiver Operating Characteristic (ROC) curve, while the map renders the resulting susceptibility probability distribution for the calibration set.
-![Calibration Metrics](images/calib2.jpg)
+![Calibration Metrics](images/calib_c.jpg)
 ![Calibration Probability Map](images/calib2_c.jpg)
 
 ### 3. Calibration Diagnostics (Spatial Confusion Matrix)
