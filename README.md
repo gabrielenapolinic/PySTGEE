@@ -37,7 +37,7 @@ The following sections illustrate the operational steps of the tool, ordered by 
 
 ### 1. Initialization and Data Loading
 Upon execution, the script authenticates with GEE, loads the user-defined vector assets, and renders the study area on the interactive map. The control dashboard is initialized in the bottom-right corner.
-![Initialization](initimage_c.png)
+![Initialization](images/first_c.jpg)
 
 ### 2. Model Calibration
 The calibration process involves training the Random Forest model on the dataset constructed from historical events. The dashboard displays the Feature Importance plot and the Receiver Operating Characteristic (ROC) curve. The map renders the resulting susceptibility probability distribution for the calibration set.
