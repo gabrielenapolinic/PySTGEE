@@ -17,7 +17,7 @@ The application is designed to run in a Jupyter/Colab environment and automates 
 * **Interactive Dashboard**: Features a Graphical User Interface (GUI) built with `ipywidgets` and `geemap` for real-time interaction, threshold optimization (Youden's J statistic), and spatial visualization of model performance.
 
 ## Run/Edit application
-From [here](https://huggingface.co/spaces/gabrielenapolinic/PySTGEE) you can run our application.
+From <a href="https://huggingface.co/spaces/gabrielenapolinic/PySTGEE" target="_blank" rel="noopener noreferrer">here</a> you can run our application.  
 
 ## How to Use
 
