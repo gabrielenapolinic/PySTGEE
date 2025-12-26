@@ -81,7 +81,7 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 ## Contacts
 The STGEE/PySTGEE methodology has been authored by **Giacomo Titti** and **Gabriele Nicola Napoli**.
 
-For any request, comment, or suggestion, please write to: giacomotitti@gmail.com or gabrielenicolanapoli@gmail.com
+For any request, comment, or suggestion, please write to: gabrielenicolanapoli@gmail.com or giacomotitti@gmail.com
 
 ## Cite
 Please cite us:
