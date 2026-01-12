@@ -16,7 +16,7 @@ The application is designed to run in a Jupyter/Colab environment and automates 
 * **Rigorous Validation**: Implements Stratified K-Fold Cross-Validation to assess model robustness and generalization capabilities.
 * **Interactive Dashboard**: Features a Graphical User Interface (GUI) built with `ipywidgets` and `geemap` for real-time interaction, threshold optimization (Youden's J statistic), and spatial visualization of model performance.
 
-## Run/Edit application
+## Run application
 From [here](https://huggingface.co/spaces/gabrielenapolinic/PySTGEE) you can run our application.
 
 ## How to Use
