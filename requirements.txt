@@ -1,0 +1,10 @@
+earthengine-api
+pandas
+geopandas
+numpy
+polars
+scikit-learn
+joblib
+fiona
+rasterio
+shapely
