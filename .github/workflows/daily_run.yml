@@ -1,0 +1,44 @@
+name: Daily Landslide Prediction
+
+# Automation trigger
+on:
+  schedule:
+    - cron: '0 3 * * *' # Runs every day at 03:00 UTC
+  workflow_dispatch: # Allows manually triggering the automation with a click
+
+jobs:
+  run-prediction:
+    runs-on: ubuntu-latest
+
+    # Permissions needed to save the new map in the repository
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Prediction Script
+        env:
+          # Injects the Earth Engine private key from secrets into the environment
+          EE_PRIVATE_KEY: ${{ secrets.EE_PRIVATE_KEY }}
+        run: |
+          python daily_prediction.py
+
+      - name: Commit and Push new map
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add daily_maps/
+          git commit -m "Automated prediction map update" || echo "No changes to commit"
+          git push
