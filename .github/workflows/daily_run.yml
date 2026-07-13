@@ -41,4 +41,5 @@ jobs:
           git config --local user.name "GitHub Action"
           git add daily_maps/
           git commit -m "Automated prediction map update" || echo "No changes to commit"
+          git pull origin main --rebase
           git push
