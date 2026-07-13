@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Landslide Early Warning</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-geojson@3.0.0/leaflet-geojson.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100%; }
+    .legend { position: absolute; bottom: 20px; right: 20px; background: white; padding: 10px; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="legend">
+    <h4>Leggenda</h4>
+    <div><span style="color: #ff0000;">■</span> Alto rischio</div>
+    <div><span style="color: #ffff00;">■</span> Medio rischio</div>
+    <div><span style="color: #00ff00;">■</span> Basso rischio</div>
+  </div>
+  <script>
+    // Trova l'ultimo file GeoJSON nella cartella daily_maps
+    fetch('https://api.github.com/repos/[TUO_USER]/[TUO_REPO]/contents/daily_maps')
+      .then(res => res.json())
+      .then(files => {
+        const latest = files.sort((a, b) => new Date(b.name) - new Date(a.name))[0];
+        return latest.download_url;
+      })
+      .then(url => {
+        const map = L.map('map').setView([34.5, 136.1], 10);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        // Carica e visualizza il GeoJSON
+        L.geoJSON(url, {
+          style: function(feature) {
+            const prob = feature.properties.Final_Dynamic_Susceptibility;
+            return {
+              color: prob > 0.7 ? '#ff0000' : prob > 0.4 ? '#ffff00' : '#00ff00',
+              weight: 1,
+              fillOpacity: 0.7
+            };
+          }
+        }).addTo(map);
+      });
+  </script>
+</body>
+</html>
