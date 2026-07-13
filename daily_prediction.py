@@ -181,9 +181,12 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
 # ------------------------------------------------------------------------------
-# 4. GEOJSON EXPORT PIPELINE (CON COMPRESSIONE GZIP INTEGRATA)
+# 4. GEOJSON EXPORT PIPELINE (CON COMPRESSIONE GZIP NATIVA INFALLIBILE)
 # ------------------------------------------------------------------------------
 def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
+    import gzip
+    import shutil
+    
     print(f"[EXPORT] Fast vectorized reconstruction from {base_gpkg_path}...")
     
     try:
@@ -203,10 +206,20 @@ def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    # Salvataggio con compressione GZIP per evitare il blocco dei 100MB di GitHub
-    print(f"[EXPORT] Compressing and writing {len(merged_gdf)} records to {output_path}...")
-    merged_gdf.to_file(output_path, driver="GeoJSON", compression="gzip")
-    print(f"[EXPORT] Successfully saved compressed map!")
+    # 1. Salviamo temporaneamente il GeoJSON non compresso
+    temp_geojson = output_path.replace('.gz', '')
+    print(f"[EXPORT] Writing {len(merged_gdf)} records to temporary geometry file...")
+    merged_gdf.to_file(temp_geojson, driver="GeoJSON")
+    
+    # 2. Lo comprimiamo ad alta velocità in formato .gz
+    print(f"[EXPORT] Compressing to {output_path}...")
+    with open(temp_geojson, 'rb') as f_in:
+        with gzip.open(output_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+            
+    # 3. Rimuoviamo il file enorme temporaneo per non violare i limiti di GitHub
+    os.remove(temp_geojson)
+    print(f"[EXPORT] Successfully generated and compressed map: {output_path}!")
 
 # ------------------------------------------------------------------------------
 # MAIN EXECUTION ROUTINE
