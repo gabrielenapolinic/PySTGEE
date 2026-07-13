@@ -3,7 +3,7 @@ pandas
 geopandas
 numpy
 polars
-scikit-learn
+scikit-learn==1.6.1
 joblib
 fiona
 rasterio
