@@ -203,7 +203,7 @@ def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    # Salvataggio con compressione GZIP automatica per evitare il blocco dei 100MB di GitHub
+    # Salvataggio con compressione GZIP per evitare il blocco dei 100MB di GitHub
     print(f"[EXPORT] Compressing and writing {len(merged_gdf)} records to {output_path}...")
     merged_gdf.to_file(output_path, driver="GeoJSON", compression="gzip")
     print(f"[EXPORT] Successfully saved compressed map!")
@@ -240,7 +240,7 @@ if __name__ == "__main__":
             best_days=best_days
         )
         
-        # Aggiornata l'estensione finale in .geojson.gz per ridurre il peso del 90%
+        # Estensione modificata in .geojson.gz
         output_geojson = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.geojson.gz")
         export_prediction_to_geojson(final_results, BASE_GPKG_PATH, output_geojson)
         
