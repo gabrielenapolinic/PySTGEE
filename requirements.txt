@@ -10,3 +10,4 @@ rasterio
 shapely
 pyogrio
 matplotlib
+folium
