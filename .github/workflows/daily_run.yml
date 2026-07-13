@@ -2,10 +2,8 @@ name: Daily Landslide Prediction Pipeline
 
 on:
   schedule:
-    # Esegue in automatico ogni notte alle 02:00 UTC per generare la mappa di domani
     - cron: '0 2 * * *'
   workflow_dispatch:
-    # Permette il lancio manuale premendo il pulsante "Run workflow" su GitHub
 
 jobs:
   run-prediction:
@@ -14,6 +12,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
