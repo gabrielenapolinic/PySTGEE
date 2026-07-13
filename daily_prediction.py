@@ -91,27 +91,29 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     print("[EXPORT] Reading base geometries...")
     gdf_base = gpd.read_file(base_gpkg_path)
     
-    if 'poly_uid' not in gdf_base.columns:
-        gdf_base['poly_uid'] = [f"{round(x, 6)}_{round(y, 6)}" for x, y in zip(gdf_base.geometry.centroid.x, gdf_base.geometry.centroid.y)]
-        
-    print("[JOIN] Merging predictions with geometries...")
-    if 'poly_uid' in gdf_base.columns and 'poly_uid' in result_df.columns:
-        merged = gdf_base.merge(result_df, on='poly_uid')
+    print(f"[JOIN] Geometries count: {len(gdf_base)} | Predictions count: {len(result_df)}")
+    
+    # --- BULLETPROOF JOIN LOGIC ---
+    # Prioritize direct index mapping if row counts match, bypassing fragile string joins
+    if len(gdf_base) == len(result_df):
+        print("[JOIN] Exact row count match! Mapping predictions directly by index to guarantee 100% polygon coverage.")
+        merged = gdf_base.copy()
+        merged['Final_Dynamic_Susceptibility'] = result_df['Final_Dynamic_Susceptibility'].values
+        merged['Susceptibility_Prob'] = result_df['Susceptibility_Prob'].values
+        merged['Rn_m'] = result_df['Rn_m'].values if 'Rn_m' in result_df.columns else 0.0
+        if 'poly_uid' not in merged.columns:
+            merged['poly_uid'] = result_df['poly_uid'].values if 'poly_uid' in result_df.columns else [f"ID_{i}" for i in range(len(merged))]
     else:
-        common_cols = [c for c in gdf_base.columns if c in result_df.columns and c != 'geometry']
-        if common_cols:
-            merged = gdf_base.merge(result_df, on=common_cols[0])
-        elif len(gdf_base) == len(result_df):
-            merged = gdf_base.copy()
-            for col in ['Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']:
-                merged[col] = result_df[col].values
-            if 'poly_uid' not in merged.columns:
-                merged['poly_uid'] = result_df['poly_uid'].values if 'poly_uid' in result_df.columns else [f"ID_{i}" for i in range(len(merged))]
-        else:
-            raise ValueError("Cannot join GeoPackage and CSV.")
+        print("[JOIN] Row counts differ. Attempting robust merge on 'poly_uid'...")
+        if 'poly_uid' not in gdf_base.columns:
+            gdf_base['poly_uid'] = [f"{round(x, 6)}_{round(y, 6)}" for x, y in zip(gdf_base.geometry.centroid.x, gdf_base.geometry.centroid.y)]
+        merged = gdf_base.merge(result_df, on='poly_uid', how='inner')
 
-    if len(merged) == 0:
-        raise ValueError("CRITICAL ERROR: Merged GeoDataFrame has 0 rows!")
+    # Strict guard against silent empty or near-empty maps
+    if len(merged) < 100:
+        raise ValueError(f"CRITICAL ERROR: Merged GeoDataFrame has only {len(merged)} rows! Join failed.")
+        
+    print(f"[SUCCESS] Prepared {len(merged)} polygons for visualization and GIS export.")
         
     if merged.crs is None:
         merged.set_crs("EPSG:4326", inplace=True)
