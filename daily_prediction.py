@@ -72,28 +72,55 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map):
     df['Rn_m'] = 0.0  # Placeholder for GEE precipitation extraction
     df['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df['Susceptibility_Prob']) * np.exp(-df['Rn_m'] / 200.0)
     
+    # Ensure ID column exists
+    if 'poly_uid' not in df.columns:
+        df['poly_uid'] = [f"ID_{i}" for i in range(len(df))]
+        
     return df[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
 def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date):
-    """Generates GeoJSON and Interactive HTML Dashboard."""
+    """Generates GeoJSON and Interactive HTML Dashboard with robust join logic."""
     gdf_base = gpd.read_file(base_gpkg_path)
     
-    # Generate poly_uid only if it does not already exist in the GeoPackage
-    if 'poly_uid' not in gdf_base.columns:
-        gdf_base['poly_uid'] = [f"{round(x, 6)}_{round(y, 6)}" for x, y in zip(gdf_base.geometry.centroid.x, gdf_base.geometry.centroid.y)]
+    # --- ROBUST & FOOLPROOF JOIN LOGIC ---
+    # Instead of fragile coordinate strings, we check for a real shared ID column
+    # or align directly by row index since GeoPackage and CSV are the exact same dataset.
+    if 'poly_uid' in gdf_base.columns and 'poly_uid' in result_df.columns:
+        print("[JOIN] Merging on existing 'poly_uid' column...")
+        merged = gdf_base.merge(result_df, on='poly_uid')
+    else:
+        common_cols = [c for c in gdf_base.columns if c in result_df.columns and c != 'geometry']
+        if common_cols:
+            print(f"[JOIN] Merging on detected common column: '{common_cols[0]}'")
+            merged = gdf_base.merge(result_df, on=common_cols[0])
+        elif len(gdf_base) == len(result_df):
+            print("[JOIN] Aligning GeoPackage and CSV directly by index (identical row count)...")
+            merged = gdf_base.copy()
+            for col in ['Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']:
+                merged[col] = result_df[col].values
+            if 'poly_uid' not in merged.columns:
+                merged['poly_uid'] = result_df['poly_uid'].values if 'poly_uid' in result_df.columns else [f"ID_{i}" for i in range(len(merged))]
+        else:
+            raise ValueError(f"CRITICAL: Cannot join GeoPackage ({len(gdf_base)} rows) and CSV ({len(result_df)} rows). No common ID column and row counts differ.")
+
+    # --- STRICT GUARD AGAINST SILENT EMPTY MAPS ---
+    if len(merged) == 0:
+        raise ValueError("CRITICAL ERROR: Merged GeoDataFrame has 0 rows! The join between geometry and predictions failed.")
         
-    merged = gdf_base.merge(result_df, on='poly_uid')
+    print(f"[DEBUG] Successfully prepared {len(merged)} polygons for visualization.")
     
-    # --- FIX 1: Ensure geometry is valid and in standard WGS84 (EPSG:4326) ---
-    if merged.crs != "EPSG:4326":
+    # Ensure valid WGS84 CRS for Leaflet/Folium rendering
+    if merged.crs is None:
+        merged.set_crs("EPSG:4326", inplace=True)
+    elif merged.crs != "EPSG:4326":
         merged = merged.to_crs("EPSG:4326")
     
     # Simplify geometry safely while keeping topology intact
     merged['geometry'] = merged['geometry'].simplify(0.0005, preserve_topology=True)
     
-    # --- FIX 2: Cast explicitly to native Python types to avoid JSON serialization bugs ---
+    # Clean data types to prevent JSON serialization errors
+    merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].fillna(0.0).astype(float)
     merged['poly_uid'] = merged['poly_uid'].astype(str)
-    merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].astype(float)
     
     # Save Compressed GeoJSON
     print("[EXPORT] Saving compressed GeoJSON...")
@@ -108,7 +135,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     m = folium.Map(location=[merged.geometry.centroid.y.mean(), merged.geometry.centroid.x.mean()], zoom_start=9)
     colormap = LinearColormap(colors=VIS_PALETTE, vmin=0, vmax=1).add_to(m)
     
-    # --- FIX 3: Pass the GeoDataFrame directly to Folium (do NOT use json.loads) ---
     folium.GeoJson(
         merged[['poly_uid', 'Final_Dynamic_Susceptibility', 'geometry']],
         style_function=lambda x: {
