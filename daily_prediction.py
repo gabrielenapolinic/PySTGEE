@@ -181,14 +181,13 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
 # ------------------------------------------------------------------------------
-# 4. GEOJSON EXPORT PIPELINE (CON ANTEPRIMA VISIVA PNG PER GITHUB)
+# 4. GEOJSON & INTERACTIVE HTML WEB MAP EXPORT PIPELINE
 # ------------------------------------------------------------------------------
-def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
+def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date):
     import gzip
     import shutil
-    import matplotlib
-    matplotlib.use('Agg')  # Fondamentale per disegnare su server Linux headless (GitHub Actions)
-    import matplotlib.pyplot as plt
+    import folium
+    from branca.colormap import LinearColormap
     
     print(f"[EXPORT] Fast vectorized reconstruction from {base_gpkg_path}...")
     
@@ -205,63 +204,123 @@ def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     df_filtered = result_df.copy()
     df_filtered['poly_uid'] = df_filtered['poly_uid'].astype(str)
     
-    colonne_essenziali = ['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']
-    df_da_unire = df_filtered[[c for c in colonne_essenziali if c in df_filtered.columns]]
+    essential_cols = ['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']
+    df_to_merge = df_filtered[[c for c in essential_cols if c in df_filtered.columns]]
     
-    merged_gdf = gdf_base[['poly_uid', 'geometry']].merge(df_da_unire, on='poly_uid', how='inner')
+    merged_gdf = gdf_base[['poly_uid', 'geometry']].merge(df_to_merge, on='poly_uid', how='inner')
     
     # --------------------------------------------------------------------------
-    # NOVITÀ: CREAZIONE ANTEPRIMA GRAFICA PNG PER LA VISUALIZZAZIONE SU GITHUB
+    # PART A: BUILD INTERACTIVE HTML WEB MAP WITH PANELS
     # --------------------------------------------------------------------------
     try:
-        print("[EXPORT] Generating visual PNG map preview for GitHub...")
-        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+        print("[EXPORT] Building Interactive HTML Web Dashboard with Panels...")
         
-        # Disegniamo la mappa usando una scala di colori (da giallo a rosso allarme)
-        merged_gdf.plot(
-            column='Final_Dynamic_Susceptibility',
-            ax=ax,
-            cmap='YlOrRd',  # Scala colore Giallo -> Arancio -> Rosso
-            legend=True,
-            legend_kwds={'label': "Indice di Suscettibilità Dinamica", 'orientation': "horizontal", 'pad': 0.03},
-            vmin=0, 
-            vmax=1
+        # 1. Calculate map center
+        bounds = merged_gdf.total_bounds # [minx, miny, maxx, maxy]
+        center_lat = (bounds[1] + bounds[3]) / 2.0
+        center_lon = (bounds[0] + bounds[2]) / 2.0
+        
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=9,
+            tiles="CartoDB positron", # Clean light basemap
+            control_scale=True
         )
         
-        # Titolo e pulizia dei bordi
-        target_date = os.path.basename(output_path).replace('prediction_', '').replace('.geojson.gz', '')
-        ax.set_title(f"Suscettibilità Frane Spazio-Temporale | Data: {target_date}", fontsize=14, fontweight='bold', pad=15)
-        ax.set_axis_off()  # Rimuove le cornici e i numeri degli assi per un look pulito
+        # Add Esri Satellite Imagery Basemap Panel Option
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='Satellite Imagery',
+            overlay=False
+        ).add_to(m)
         
-        # Salviamo l'immagine .png nella stessa cartella
-        png_path = output_path.replace('.geojson.gz', '.png').replace('.geojson', '.png')
-        plt.savefig(png_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close(fig)
-        print(f"[EXPORT] PNG visual map successfully saved to: {png_path}")
-    except Exception as e_png:
-        print(f"[!] Warning: Could not generate PNG preview: {str(e_png)}")
+        # 2. Create Floating Color Legend Panel
+        colormap = LinearColormap(
+            colors=['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'],
+            vmin=0.0, vmax=1.0,
+            caption=f"Dynamic Landslide Susceptibility Index | Date: {target_date}"
+        )
+        colormap.add_to(m)
+        
+        # 3. Optimize Geometry specifically for Web Browser performance
+        web_gdf = merged_gdf.copy()
+        web_gdf['geometry'] = web_gdf['geometry'].simplify(0.0005, preserve_topology=True)
+        
+        style_function = lambda x: {
+            'fillColor': colormap(x['properties']['Final_Dynamic_Susceptibility']),
+            'color': 'transparent',
+            'weight': 0.3,
+            'fillOpacity': 0.75
+        }
+        
+        # 4. Create Hover Inspector Panel (Tooltip)
+        tooltip = folium.GeoJsonTooltip(
+            fields=['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility'],
+            aliases=['Polygon ID:', 'Static Susceptibility:', 'Rainfall (mm):', 'Dynamic Risk:'],
+            localize=True,
+            sticky=False,
+            labels=True,
+            style="""
+                background-color: #F0EFEF;
+                border: 2px solid black;
+                border-radius: 4px;
+                box-shadow: 3px;
+                font-family: Arial; font-size: 12px;
+            """,
+            max_width=400
+        )
+        
+        folium.GeoJson(
+            web_gdf,
+            name="Landslide Risk Layer",
+            style_function=style_function,
+            tooltip=tooltip
+        ).add_to(m)
+        
+        # 5. Add Custom Title Panel (Floating HTML Box)
+        title_html = f"""
+             <div style="position: fixed; 
+                         top: 15px; left: 50px; width: 300px; height: 90px; 
+                         z-index:9999; font-size:13px; background-color:white; 
+                         border:2px solid #333; border-radius: 6px; padding: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+             <b style="font-size:15px; color:#bd0026;">PySTGEE Web Monitor</b><br>
+             <b>Target Date:</b> {target_date}<br>
+             <i style="font-size:11px; color:#555;">Hover over polygons to inspect features.</i>
+             </div>
+             """
+        m.get_root().html.add_child(folium.Element(title_html))
+        
+        # 6. Add Layer Switcher Panel
+        folium.LayerControl(position='topright').add_to(m)
+        
+        # Save HTML Map
+        os.makedirs(os.path.dirname(output_html_path), exist_ok=True)
+        m.save(output_html_path)
+        print(f"[EXPORT] Interactive HTML map saved successfully: {output_html_path}")
+    except Exception as e_html:
+        print(f"[!] Warning: Could not generate HTML map: {str(e_html)}")
     # --------------------------------------------------------------------------
 
-    # Riduzione peso geomatico (Arrotondamenti e pulizia vertici per il file .gz)
+    # --------------------------------------------------------------------------
+    # PART B: ULTRA-COMPRESSED GEOJSON EXPORT (.gz) FOR QGIS/GIS
+    # --------------------------------------------------------------------------
     merged_gdf.geometry = merged_gdf.geometry.set_precision(1e-6)
-    
     for col in ['Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']:
         if col in merged_gdf.columns:
             merged_gdf[col] = merged_gdf[col].round(4)
     
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    temp_geojson = output_path.replace('.gz', '')
+    temp_geojson = output_geojson_path.replace('.gz', '')
     print(f"[EXPORT] Writing {len(merged_gdf)} records to temporary geometry file...")
     merged_gdf.to_file(temp_geojson, driver="GeoJSON")
     
-    print(f"[EXPORT] Compressing to {output_path} with max GZIP compression...")
+    print(f"[EXPORT] Compressing to {output_geojson_path} with max GZIP compression...")
     with open(temp_geojson, 'rb') as f_in:
-        with gzip.open(output_path, 'wb', compresslevel=9) as f_out:
+        with gzip.open(output_geojson_path, 'wb', compresslevel=9) as f_out:
             shutil.copyfileobj(f_in, f_out)
             
     os.remove(temp_geojson)
-    print(f"[EXPORT] Successfully generated and ultra-compressed map: {output_path}!")
+    print(f"[EXPORT] Successfully generated ultra-compressed GeoJSON: {output_geojson_path}!")
 
 # ------------------------------------------------------------------------------
 # MAIN EXECUTION ROUTINE
@@ -295,9 +354,11 @@ if __name__ == "__main__":
             best_days=best_days
         )
         
-        # Estensione modificata in .geojson.gz
+        # Define output file paths for both formats
         output_geojson = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.geojson.gz")
-        export_prediction_to_geojson(final_results, BASE_GPKG_PATH, output_geojson)
+        output_html = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.html")
+        
+        export_prediction_to_geojson_and_map(final_results, BASE_GPKG_PATH, output_geojson, output_html, target_date)
         
         print("\n[SYSTEM] Daily workflow concluded successfully.")
         
