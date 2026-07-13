@@ -35,11 +35,11 @@ jobs:
         run: |
           python daily_prediction.py
 
-      - name: Commit and Push new map
+      - name: Commit and Push latest maps
         run: |
           git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add daily_maps/
-          git commit -m "Automated prediction map update" || echo "No changes to commit"
+          git config --local user.name "GitHub Action Bot"
+          git add daily_maps/ index.html # <-- AGGIUNTO index.html QUI
+          git commit -m "Automated prediction update for tomorrow" || echo "No changes to commit"
           git pull origin main --rebase
           git push
