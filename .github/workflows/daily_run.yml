@@ -1,16 +1,14 @@
 name: Daily Landslide Prediction
 
-# Automation trigger
 on:
   schedule:
-    - cron: '0 3 * * *' # Runs every day at 03:00 UTC
-  workflow_dispatch: # Allows manually triggering the automation with a click
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 jobs:
   run-prediction:
     runs-on: ubuntu-latest
 
-    # Permissions needed to save the new map in the repository
     permissions:
       contents: write
 
@@ -18,8 +16,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          lfs: true
-          fetch-depth: 1
+          lfs: true        # <-- FORZA IL DOWNLOAD DEL FILE GPKG REALE!
+          fetch-depth: 1   # <-- Scarica solo l'ultima versione per fare prima
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -31,12 +29,8 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: List files for debugging
-        run: ls -R
-
       - name: Run Prediction Script
         env:
-          # Injects the Earth Engine private key from secrets into the environment
           EE_PRIVATE_KEY: ${{ secrets.EE_PRIVATE_KEY }}
         run: |
           python daily_prediction.py
