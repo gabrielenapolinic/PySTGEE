@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-PySTGEE: Automated Spatio-Temporal Landslide Prediction Pipeline
+================================================================================
+ PySTGEE: Automated Spatio-Temporal Landslide Prediction Pipeline
+================================================================================
+ Executes autonomously on GitHub Actions.
+ Predictions are automatically generated for 'Tomorrow'.
+================================================================================
 """
 
 import os
@@ -11,6 +16,7 @@ import json
 import datetime
 import gzip
 import shutil
+import warnings
 import joblib
 import ee
 import pandas as pd
@@ -18,6 +24,9 @@ import geopandas as gpd
 import numpy as np
 import folium
 from branca.colormap import LinearColormap
+
+# Ignore CRS centroid warnings for cleaner logs
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
 EE_PROJECT = 'stgee-dataset'
@@ -28,9 +37,11 @@ OUTPUT_DIR = 'daily_maps'
 VIS_PALETTE = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
 
 def authenticate_gee():
+    """Initializes GEE connection using environment secrets."""
     print("[SYSTEM] Authenticating Earth Engine...")
     key_content = os.environ.get('EE_PRIVATE_KEY')
-    if not key_content: raise ValueError("CRITICAL ERROR: EE_PRIVATE_KEY not found.")
+    if not key_content: 
+        raise ValueError("CRITICAL ERROR: 'EE_PRIVATE_KEY' not found.")
     service_account_info = json.loads(key_content)
     credentials = ee.ServiceAccountCredentials(service_account_info['client_email'], key_data=key_content)
     ee.Initialize(credentials, project=EE_PROJECT)
@@ -45,8 +56,12 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map):
             if col in df.columns:
                 for cat in cats:
                     df[f"{col}_{cat}"] = (df[col] == cat).astype(int)
+        
+        # Remove raw categorical columns to avoid confusing the model pipeline
+        raw_cat_cols = list(dummies_map.keys())
+        df.drop(columns=raw_cat_cols, inplace=True, errors='ignore')
     
-    # 2. ULTIMATE FIX: Extract the EXACT columns the model expects directly from the model
+    # 2. Extract the EXACT columns the model expects directly from the trained model
     expected_cols = model.feature_names_in_
     
     # 3. Align the DataFrame perfectly (fills missing with 0.0, drops unexpected)
@@ -54,7 +69,7 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map):
     
     # 4. Inference
     df['Susceptibility_Prob'] = model.predict_proba(X_static)[:, 1]
-    df['Rn_m'] = 0.0 
+    df['Rn_m'] = 0.0  # Placeholder for GEE precipitation extraction
     df['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df['Susceptibility_Prob']) * np.exp(-df['Rn_m'] / 200.0)
     
     return df[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
@@ -62,10 +77,15 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map):
 def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date):
     """Generates GeoJSON and Interactive HTML Dashboard."""
     gdf_base = gpd.read_file(base_gpkg_path)
-    gdf_base['poly_uid'] = [f"{round(x, 6)}_{round(y, 6)}" for x, y in zip(gdf_base.geometry.centroid.x, gdf_base.geometry.centroid.y)]
+    
+    # Generate poly_uid only if it does not already exist in the GeoPackage
+    if 'poly_uid' not in gdf_base.columns:
+        gdf_base['poly_uid'] = [f"{round(x, 6)}_{round(y, 6)}" for x, y in zip(gdf_base.geometry.centroid.x, gdf_base.geometry.centroid.y)]
+        
     merged = gdf_base.merge(result_df, on='poly_uid')
     
     # Save Compressed GeoJSON
+    print("[EXPORT] Saving compressed GeoJSON...")
     temp_json = output_geojson_path.replace('.gz', '')
     merged.to_file(temp_json, driver="GeoJSON")
     with open(temp_json, 'rb') as f_in, gzip.open(output_geojson_path, 'wb', compresslevel=9) as f_out:
@@ -73,11 +93,17 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     os.remove(temp_json)
 
     # Save Interactive HTML Map
+    print("[EXPORT] Generating HTML Dashboard...")
     m = folium.Map(location=[merged.geometry.centroid.y.mean(), merged.geometry.centroid.x.mean()], zoom_start=9)
     colormap = LinearColormap(colors=VIS_PALETTE, vmin=0, vmax=1).add_to(m)
+    
+    # CRITICAL FIX: Use .get() to avoid KeyError during folium's internal validation test
     folium.GeoJson(
         merged.simplify(0.001),
-        style_function=lambda x: {'fillColor': colormap(x['properties']['Final_Dynamic_Susceptibility']), 'weight': 0.1},
+        style_function=lambda x: {
+            'fillColor': colormap(x['properties'].get('Final_Dynamic_Susceptibility', 0)), 
+            'weight': 0.1
+        },
         tooltip=folium.GeoJsonTooltip(fields=['poly_uid', 'Final_Dynamic_Susceptibility'])
     ).add_to(m)
     m.save(output_html_path)
@@ -89,7 +115,6 @@ if __name__ == "__main__":
         cached_data = joblib.load(MODEL_PATH)
         df_base = pd.read_csv(STATIC_PRED_CSV, low_memory=False)
         
-        # We no longer pass original_predictors, just the model
         results = get_prediction_logic(
             target_date, 
             df_base, 
@@ -103,11 +128,11 @@ if __name__ == "__main__":
         
         export_results(results, BASE_GPKG_PATH, out_gz, out_html, target_date)
         
-        # "Latest" Aliases
+        # "Latest" Aliases for zero-touch web routing
         shutil.copy(out_gz, os.path.join(OUTPUT_DIR, "latest_map.geojson.gz"))
         shutil.copy(out_html, os.path.join(OUTPUT_DIR, "latest_map.html"))
         
-        print(f"[SUCCESS] Pipeline finished.")
+        print("[SUCCESS] Pipeline finished.")
     except Exception as e:
         print(f"[CRITICAL] Pipeline Failed: {e}")
         import traceback; traceback.print_exc()
