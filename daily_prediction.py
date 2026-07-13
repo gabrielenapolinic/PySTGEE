@@ -123,14 +123,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].fillna(0.0).astype(float)
     merged['poly_uid'] = merged['poly_uid'].astype(str)
     
-    # Save Compressed GeoJSON (Full fidelity, NO simplification for GIS users)
-    print("[EXPORT] Saving compressed GeoJSON...")
-    temp_json = output_geojson_path.replace('.gz', '')
-    merged.to_file(temp_json, driver="GeoJSON")
-    with open(temp_json, 'rb') as f_in, gzip.open(output_geojson_path, 'wb', compresslevel=9) as f_out:
-        shutil.copyfileobj(f_in, f_out)
-    os.remove(temp_json)
-
     # --- RASTERIZATION FOR WEB MAP (100% Geometry Fidelity, Zero Browser Lag) ---
     print("[EXPORT] Rasterizing geometries for web visualization...")
     minx, miny, maxx, maxy = merged.total_bounds
@@ -145,7 +137,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
         
     transform_mat = rasterio.transform.from_bounds(minx, miny, maxx, maxy, width, height)
     
-    # Prepare shapes: list of (geometry, value)
+    # Prepare shapes: list of (geometry, value) using original unsimplified geometries
     shapes_for_rasterize = [(geom, val) for geom, val in zip(merged.geometry, merged['Final_Dynamic_Susceptibility']) if geom is not None and not geom.is_empty]
     
     raster = rasterio.features.rasterize(
@@ -298,6 +290,21 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     
     m.get_root().html.add_child(folium.Element(ui_html))
     m.save(output_html_path)
+
+    # --- SAVE COMPRESSED GEOJSON (Optimized to stay well under GitHub 100MB limit) ---
+    print("[EXPORT] Optimizing and saving compressed GeoJSON for GIS users...")
+    export_gdf = merged[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility', 'geometry']].copy()
+    
+    # Simplify slightly (0.0001 deg ~ 10m) to reduce vertex count without losing topology
+    export_gdf['geometry'] = export_gdf['geometry'].simplify(0.0001, preserve_topology=True)
+    
+    temp_json = output_geojson_path.replace('.gz', '')
+    export_gdf.to_file(temp_json, driver="GeoJSON")
+    
+    with open(temp_json, 'rb') as f_in, gzip.open(output_geojson_path, 'wb', compresslevel=9) as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    os.remove(temp_json)
+    print(f"[SUCCESS] GeoJSON saved and compressed: {os.path.getsize(output_geojson_path) / (1024*1024):.2f} MB")
 
 if __name__ == "__main__":
     try:
