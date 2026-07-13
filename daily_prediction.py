@@ -4,13 +4,17 @@
 ================================================================================
  PySTGEE: Automated Spatio-Temporal Prediction Pipeline (ULTRA-FAST VERSION)
 
- This script automates daily landslide susceptibility predictions using:
- - Pre-trained Random Forest model (loaded from .joblib)
- - Dynamic rainfall data from JAXA GPM (historical) or ECMWF (forecast)
- - Static terrain features (slope, aspect, NDVI, etc.)
- - Output: Interactive HTML map + Compressed GeoJSON for GIS
+ Purpose:
+   - Automates daily landslide susceptibility predictions using a pre-trained model.
+   - Combines static terrain features (slope, aspect, NDVI, etc.) with dynamic rainfall data.
+   - Outputs: Interactive HTML map (Folium) + Compressed GeoJSON (.gz) for GIS tools.
 
- Designed to run as a GitHub Actions workflow (daily_run.yml).
+ Usage:
+   - Designed to run as a GitHub Actions workflow (see daily_run.yml).
+   - Requires Earth Engine service account credentials (EE_PRIVATE_KEY env var).
+
+ Dependencies:
+   - earthengine-api, pandas, geopandas, numpy, joblib, folium, etc. (see requirements.txt)
 ================================================================================
 """
 
@@ -47,8 +51,11 @@ OUTPUT_DIR = 'daily_maps'
 # =============================================================================
 def authenticate_gee():
     """
-    Authenticates with Google Earth Engine using service account credentials.
-    Requires EE_PRIVATE_KEY environment variable (set in GitHub Secrets).
+    Authenticates with Google Earth Engine using a service account.
+    Requires the EE_PRIVATE_KEY environment variable (set in GitHub Secrets).
+    Raises:
+        ValueError: If EE_PRIVATE_KEY is not found in the environment.
+        RuntimeError: If authentication fails.
     """
     print("[SYSTEM] Initializing Earth Engine Authentication...")
     key_content = os.environ.get('EE_PRIVATE_KEY')
@@ -67,13 +74,21 @@ def authenticate_gee():
         raise RuntimeError(f"Earth Engine Authentication Failed: {str(e)}")
 
 # =============================================================================
-# 3. CORE PROCESSING FUNCTIONS (OPTIMIZED FOR PERFORMANCE)
+# 3. CORE PROCESSING FUNCTIONS
 # =============================================================================
 
 def extract_coordinates(uid):
     """
-    Decodes polygon UID (format: "lon_lat" or "lon_lat_encoded") into (longitude, latitude).
-    Handles both raw coordinates and encoded UIDs (divided by 1e7).
+    Decodes a polygon UID into (longitude, latitude) coordinates.
+    Supports two formats:
+      - Raw coordinates: "136.108431_34.536892" -> (136.108431, 34.536892)
+      - Encoded coordinates: "136108431_34536892" -> (136.108431, 34.536892) [divided by 1e7]
+
+    Args:
+        uid (str/int): Polygon unique identifier.
+
+    Returns:
+        tuple: (longitude, latitude) as floats.
     """
     uid_str = str(uid)
     if '_' in uid_str:
@@ -81,7 +96,7 @@ def extract_coordinates(uid):
         try:
             return float(parts[0]), float(parts[1])
         except ValueError:
-            # Fallback for encoded UIDs (e.g., "136108431_34536892" -> lon/1e7, lat/1e7)
+            # Fallback for encoded UIDs (divide by 10^7)
             return float(parts[0]) / 1e7, float(parts[1]) / 1e7
     else:
         return int(uid_str) / 1e7, 0.0
@@ -92,13 +107,13 @@ def encode_categoricals(df, predictor_cols, cat_cols, dummies_map=None):
     Ensures consistency between training and prediction by adding missing dummy columns.
 
     Args:
-        df: Input DataFrame
-        predictor_cols: List of all predictor column names
-        cat_cols: List of categorical column names (e.g., ['LULCmajor', 'Litho'])
-        dummies_map: Dictionary of {column: [categories]} for one-hot encoding
+        df (pd.DataFrame): Input DataFrame.
+        predictor_cols (list): List of all predictor column names.
+        cat_cols (list): List of categorical column names (e.g., ['LULCmajor', 'Litho']).
+        dummies_map (dict): Dictionary of {column: [categories]} for one-hot encoding.
 
     Returns:
-        Tuple: (encoded_df, new_predictor_cols, dummies_map)
+        tuple: (encoded_df, new_predictor_cols, dummies_map)
     """
     df = df.copy()
     if not cat_cols:
@@ -113,7 +128,7 @@ def encode_categoricals(df, predictor_cols, cat_cols, dummies_map=None):
                 df[f"{col}_{cat}"] = (df[col] == cat).astype(int)
             df.drop(columns=[col], inplace=True, errors='ignore')
 
-        # Ensure all dummy columns exist (for consistency)
+        # Ensure all dummy columns exist (for consistency with training)
         all_dummies = [f"{col}_{cat}" for col, cats in dummies_map.items() for cat in cats]
         for c in all_dummies:
             if c not in df.columns:
@@ -129,12 +144,12 @@ def get_rainfall_image(target_date_str, days, source='JAXA'):
     Builds an Earth Engine Image for cumulative rainfall over the specified days.
 
     Args:
-        target_date_str: Date string in 'YYYY-MM-DD' format
-        days: Number of days for rainfall accumulation (e.g., 7 or 14)
-        source: 'JAXA' (historical, GSMaP) or 'ECMWF' (forecast)
+        target_date_str (str): Date in 'YYYY-MM-DD' format.
+        days (int): Number of days for rainfall accumulation (e.g., 7 or 14).
+        source (str): 'JAXA' (historical, GSMaP) or 'ECMWF' (forecast).
 
     Returns:
-        ee.Image: Cumulative rainfall image (mm) with band name f'Rn{days}_m'
+        ee.Image: Cumulative rainfall image (mm) with band name f'Rn{days}_m'.
     """
     d_target = ee.Date(target_date_str)
 
@@ -173,17 +188,18 @@ def get_rainfall_image(target_date_str, days, source='JAXA'):
 def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JAXA', chunk_size=5000):
     """
     Extracts cumulative rainfall values for each polygon centroid using GEE reduceRegions.
-    Processes in chunks to avoid GEE API limits and memory issues.
+    Processes data in chunks to avoid API limits and memory issues.
+    Retries failed requests up to 3 times with exponential backoff.
 
     Args:
-        polygons_df: DataFrame with 'poly_uid' column (polygon identifiers)
-        target_date_str: Target date for prediction ('YYYY-MM-DD')
-        days: Number of days for rainfall accumulation
-        source: 'JAXA' or 'ECMWF'
-        chunk_size: Number of polygons to process per batch (default: 5000)
+        polygons_df (pd.DataFrame): DataFrame with 'poly_uid' column (polygon identifiers).
+        target_date_str (str): Target date for prediction ('YYYY-MM-DD').
+        days (int): Number of days for rainfall accumulation.
+        source (str): 'JAXA' (historical) or 'ECMWF' (forecast).
+        chunk_size (int): Number of polygons to process per batch (default: 5000).
 
     Returns:
-        DataFrame: Original polygons_df with added rainfall column (f'Rn{days}_m')
+        pd.DataFrame: Original polygons_df with added rainfall column (f'Rn{days}_m').
     """
     rain_col = f'Rn{days}_m'
     print(f"[GEE] Building {source} image for {days} days ending on {target_date_str}...")
@@ -237,7 +253,7 @@ def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JA
                 if attempt == 2:
                     print(f"[!] GEE API Error on chunk {i//chunk_size + 1}: {str(e)}. Defaulting to 0.0 mm.")
                 else:
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(2 ** attempt)  # Exponential backoff (2s, 4s)
 
     # Convert rain_dict to DataFrame and merge with input
     rain_df = pd.DataFrame(list(rain_dict.items()), columns=['poly_uid', rain_col])
@@ -256,20 +272,20 @@ def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JA
 def predict_spacetime(target_date_str, static_df, model, original_predictors, dummies_map, best_days):
     """
     Core prediction function: Combines static susceptibility with dynamic rainfall.
-
     Implements the STGEE formula:
         Final_Susceptibility = 1 - (1 - Static_Prob) * exp(-Rainfall / Reference_Rainfall)
 
     Args:
-        target_date_str: Prediction date ('YYYY-MM-DD')
-        static_df: DataFrame with static features (slope, aspect, etc.)
-        model: Pre-trained scikit-learn model (Pipeline with RandomForest)
-        original_predictors: List of static predictor column names
-        dummies_map: Pre-computed dummy encoding map for categoricals
-        best_days: Optimal rainfall accumulation window (e.g., 7 or 14 days)
+        target_date_str (str): Prediction date ('YYYY-MM-DD').
+        static_df (pd.DataFrame): DataFrame with static features (slope, aspect, etc.).
+        model: Pre-trained scikit-learn model (Pipeline with RandomForest).
+        original_predictors (list): List of static predictor column names.
+        dummies_map (dict): Pre-computed dummy encoding map for categoricals.
+        best_days (int): Optimal rainfall accumulation window (e.g., 7 or 14 days).
 
     Returns:
-        DataFrame: Predictions with columns ['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']
+        pd.DataFrame: Predictions with columns:
+            ['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']
     """
     print(f"\n[MODEL] Executing Spatio-Temporal Prediction for {target_date_str}")
     df = static_df.copy()
@@ -311,20 +327,20 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
 # =============================================================================
-# 4. GEOJSON & INTERACTIVE HTML WEB MAP EXPORT PIPELINE
+# 4. EXPORT FUNCTIONS (HTML MAP + GEOJSON)
 # =============================================================================
 def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date):
     """
-    Exports prediction results to:
-    - Interactive HTML map (Folium) for web visualization
-    - Compressed GeoJSON (.gz) for GIS tools (QGIS, ArcGIS)
+    Exports prediction results to two formats:
+      1. Interactive HTML map (Folium) for web visualization.
+      2. Compressed GeoJSON (.gz) for GIS tools (QGIS, ArcGIS).
 
     Args:
-        result_df: DataFrame with prediction results (from predict_spacetime)
-        base_gpkg_path: Path to base geometry (GeoPackage)
-        output_geojson_path: Output path for compressed GeoJSON (.geojson.gz)
-        output_html_path: Output path for HTML map
-        target_date: Date string for map title
+        result_df (pd.DataFrame): Prediction results from predict_spacetime().
+        base_gpkg_path (str): Path to base geometry (GeoPackage).
+        output_geojson_path (str): Output path for compressed GeoJSON (.geojson.gz).
+        output_html_path (str): Output path for HTML map.
+        target_date (str): Date string for map title.
     """
     import gzip
     import shutil
@@ -360,7 +376,7 @@ def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojs
     )
 
     # --------------------------------------------------------------------------
-    # PART A: BUILD INTERACTIVE HTML WEB MAP WITH PANELS
+    # PART A: INTERACTIVE HTML WEB MAP
     # --------------------------------------------------------------------------
     try:
         print("[EXPORT] Building Interactive HTML Web Dashboard with Panels...")
@@ -370,11 +386,11 @@ def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojs
         center_lat = (bounds[1] + bounds[3]) / 2.0
         center_lon = (bounds[0] + bounds[2]) / 2.0
 
-        # 2. Create base map
+        # 2. Create base map with CartoDB positron (light theme)
         m = folium.Map(
             location=[center_lat, center_lon],
             zoom_start=9,
-            tiles="CartoDB positron",  # Clean light basemap
+            tiles="CartoDB positron",
             control_scale=True
         )
 
@@ -386,9 +402,9 @@ def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojs
             overlay=False
         ).add_to(m)
 
-        # 3. Create color legend for susceptibility index
+        # 3. Create color legend for susceptibility index (yellow to dark red)
         colormap = LinearColormap(
-            colors=['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'],  # Yellow to dark red
+            colors=['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026'],
             vmin=0.0,
             vmax=1.0,
             caption=f"Dynamic Landslide Susceptibility Index | Date: {target_date}"
@@ -399,7 +415,7 @@ def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojs
         web_gdf = merged_gdf.copy()
         web_gdf['geometry'] = web_gdf['geometry'].simplify(0.0005, preserve_topology=True)
 
-        # Define style function for polygons
+        # Define style function for polygons (color based on susceptibility)
         style_function = lambda x: {
             'fillColor': colormap(x['properties']['Final_Dynamic_Susceptibility']),
             'color': 'transparent',
@@ -456,7 +472,7 @@ def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojs
         print(f"[!] Warning: Could not generate HTML map: {str(e_html)}")
 
     # --------------------------------------------------------------------------
-    # PART B: ULTRA-COMPRESSED GEOJSON EXPORT (.gz) FOR QGIS/GIS
+    # PART B: COMPRESSED GEOJSON FOR GIS
     # --------------------------------------------------------------------------
     # Optimize geometry precision for file size
     merged_gdf.geometry = merged_gdf.geometry.set_precision(1e-6)
@@ -480,14 +496,16 @@ def export_prediction_to_geojson_and_map(result_df, base_gpkg_path, output_geojs
     print(f"[EXPORT] Successfully generated ultra-compressed GeoJSON: {output_geojson_path}!")
 
 # =============================================================================
-# MAIN EXECUTION ROUTINE
+# 5. MAIN EXECUTION ROUTINE
 # =============================================================================
 if __name__ == "__main__":
     try:
         # Step 1: Authenticate with Google Earth Engine
         authenticate_gee()
 
-        # Step 2: Set target date (CURRENTLY PREDICTS FOR TODAY - NEEDS TO BE TOMORROW)
+        # Step 2: Set target date (CURRENTLY PREDICTS FOR TODAY)
+        # NOTE: To predict for TOMORROW (as per requirements), change to:
+        #       target_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         target_date = datetime.date.today().strftime('%Y-%m-%d')
         print(f"\n==================================================")
         print(f" COMMENCING DAILY PREDICTION RUN: {target_date}")
