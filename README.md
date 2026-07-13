@@ -1,7 +1,5 @@
 # PySTGEE: Automated Spatio-Temporal Landslide Susceptibility Pipeline
 
-🌐 **LIVE DAILY FORECAST MAP:** [Click here to launch the Interactive Web Dashboard](https://gabrielenapolinic.github.io/PySTGEE/)
-
 ---
 
 <img src="PySTGEE_logo_transparent_wletters.png" alt="PySTGEE Logo" width="100%"/>
