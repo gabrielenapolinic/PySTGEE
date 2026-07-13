@@ -506,7 +506,7 @@ if __name__ == "__main__":
         # Step 2: Set target date (CURRENTLY PREDICTS FOR TODAY)
         # NOTE: To predict for TOMORROW (as per requirements), change to:
         #       target_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-        target_date = datetime.date.today().strftime('%Y-%m-%d')
+        target_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         print(f"\n==================================================")
         print(f" COMMENCING DAILY PREDICTION RUN: {target_date}")
         print(f"==================================================\n")
