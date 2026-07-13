@@ -1,7 +1,5 @@
 # PySTGEE: Automated Spatio-Temporal Landslide Susceptibility Pipeline
 
----
-
 <img src="PySTGEE_logo_transparent_wletters.png" alt="PySTGEE Logo" width="100%"/>
 
 ## Overview
