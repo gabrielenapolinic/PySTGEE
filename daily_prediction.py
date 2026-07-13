@@ -32,7 +32,7 @@ CATEGORICAL_METRICS = ['LULCmajor', 'Litho']  # Must match the notebook configur
 # Paths to static resources (Ensure these are uploaded to your GitHub repository)
 # Adjust these filenames to match your actual repository structure
 MODEL_PATH = 'MASTER_MODEL_Japan_fixedLithoRF_U_Kii_fixedLithoRF_U_lsdJapan6690_final.joblib'
-STATIC_PRED_CSV = 'Kii_fixedLithoRF_U_gpkg_PRED_static.csv'
+STATIC_PRED_CSV = 'Kii_fixedLithoRF_U.gpkg_PRED_static.csv'
 BASE_GPKG_PATH = 'Kii_fixedLithoRF_U.gpkg'  # Required to restore polygonal geometries
 
 OUTPUT_DIR = 'daily_maps'
