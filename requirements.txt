@@ -11,4 +11,3 @@ shapely
 pyogrio
 matplotlib
 folium
-branca
