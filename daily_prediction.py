@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+PySTGEE: Automated Spatio-Temporal Landslide Prediction Pipeline
+"""
+
 import os
 import sys
 import json
@@ -26,8 +30,7 @@ VIS_PALETTE = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
 def authenticate_gee():
     print("[SYSTEM] Authenticating Earth Engine...")
     key_content = os.environ.get('EE_PRIVATE_KEY')
-    if not key_content:
-        raise ValueError("CRITICAL ERROR: 'EE_PRIVATE_KEY' not found.")
+    if not key_content: raise ValueError("CRITICAL ERROR: EE_PRIVATE_KEY not found.")
     service_account_info = json.loads(key_content)
     credentials = ee.ServiceAccountCredentials(service_account_info['client_email'], key_data=key_content)
     ee.Initialize(credentials, project=EE_PROJECT)
@@ -42,15 +45,18 @@ def get_prediction_logic(target_date_str, static_df, model, original_predictors,
             if col in df.columns:
                 for cat in cats:
                     df[f"{col}_{cat}"] = (df[col] == cat).astype(int)
-                # --- FIX: Ensure raw categorical column is removed ---
-                df.drop(columns=[col], inplace=True)
+        
+        # 2. IMPORTANT: Remove raw categorical columns that confuse the model
+        raw_cat_cols = list(dummies_map.keys())
+        df.drop(columns=raw_cat_cols, inplace=True, errors='ignore')
     
-    # 2. Reindex: Ensures column order matches training AND fills missing dummies with 0
+    # 3. Robust Alignment: Reindex forces columns to match the training pipeline perfectly
+    # Any missing dummy column is filled with 0.0, any extra is dropped
     X_static = df.reindex(columns=original_predictors, fill_value=0.0)
     
-    # 3. Inference
+    # 4. Inference
     df['Susceptibility_Prob'] = model.predict_proba(X_static)[:, 1]
-    df['Rn_m'] = 0.0 # Placeholder logic
+    df['Rn_m'] = 0.0 
     df['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df['Susceptibility_Prob']) * np.exp(-df['Rn_m'] / 200.0)
     
     return df[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
@@ -82,11 +88,9 @@ if __name__ == "__main__":
     try:
         authenticate_gee()
         target_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-        
         cached_data = joblib.load(MODEL_PATH)
         df_base = pd.read_csv(STATIC_PRED_CSV, low_memory=False)
         
-        # Pipeline check
         results = get_prediction_logic(
             target_date, df_base, 
             cached_data['model'], 
@@ -94,7 +98,6 @@ if __name__ == "__main__":
             cached_data.get('dummies_map')
         )
         
-        # Paths
         out_gz = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.geojson.gz")
         out_html = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.html")
         
