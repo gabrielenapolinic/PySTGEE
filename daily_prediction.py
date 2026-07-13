@@ -84,10 +84,14 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
         
     merged = gdf_base.merge(result_df, on='poly_uid')
     
-    # --- FIX 1: Simplify geometry safely BEFORE passing to Folium ---
+    # --- FIX 1: Ensure geometry is valid and in standard WGS84 (EPSG:4326) ---
+    if merged.crs != "EPSG:4326":
+        merged = merged.to_crs("EPSG:4326")
+    
+    # Simplify geometry safely while keeping topology intact
     merged['geometry'] = merged['geometry'].simplify(0.0005, preserve_topology=True)
     
-    # --- FIX 2: Ensure data types are standard Python types for JSON serialization ---
+    # --- FIX 2: Cast explicitly to native Python types to avoid JSON serialization bugs ---
     merged['poly_uid'] = merged['poly_uid'].astype(str)
     merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].astype(float)
     
@@ -104,20 +108,19 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     m = folium.Map(location=[merged.geometry.centroid.y.mean(), merged.geometry.centroid.x.mean()], zoom_start=9)
     colormap = LinearColormap(colors=VIS_PALETTE, vmin=0, vmax=1).add_to(m)
     
-    # --- FIX 3: Convert GeoDataFrame to GeoJSON string explicitly for Folium ---
-    geojson_data = json.loads(merged.to_json())
-    
+    # --- FIX 3: Pass the GeoDataFrame directly to Folium (do NOT use json.loads) ---
     folium.GeoJson(
-        geojson_data,
+        merged[['poly_uid', 'Final_Dynamic_Susceptibility', 'geometry']],
         style_function=lambda x: {
-            'fillColor': colormap(x['properties'].get('Final_Dynamic_Susceptibility', 0)), 
-            'color': 'black',
-            'weight': 0.1,
-            'fillOpacity': 0.7
+            'fillColor': colormap(x['properties'].get('Final_Dynamic_Susceptibility', 0.0)), 
+            'color': '#333333',
+            'weight': 0.2,
+            'fillOpacity': 0.75
         },
         tooltip=folium.GeoJsonTooltip(
             fields=['poly_uid', 'Final_Dynamic_Susceptibility'],
-            aliases=['Polygon ID:', 'Susceptibility:']
+            aliases=['Polygon ID:', 'Susceptibility Prob:'],
+            localize=True
         )
     ).add_to(m)
     m.save(output_html_path)
@@ -145,10 +148,9 @@ if __name__ == "__main__":
         # "Latest" Aliases for zero-touch web routing
         shutil.copy(out_gz, os.path.join(OUTPUT_DIR, "latest_map.geojson.gz"))
         shutil.copy(out_html, os.path.join(OUTPUT_DIR, "latest_map.html"))
-
-        shutil.copy(out_html, "index.html")
         
-        print("[SUCCESS] Pipeline finished.")
+        # Copy directly to root index.html so the website opens immediately on the map
+        shutil.copy(out_html, "index.html")
         
         print("[SUCCESS] Pipeline finished.")
     except Exception as e:
