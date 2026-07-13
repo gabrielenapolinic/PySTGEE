@@ -1,6 +1,5 @@
 name: Daily Landslide Prediction
 
-# Automatically runs every day at 03:00 UTC
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -9,6 +8,7 @@ on:
 jobs:
   run-prediction:
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
@@ -16,7 +16,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          lfs: true # Essential for large files like .joblib and .gpkg
+          lfs: true
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -28,17 +29,17 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Execute Prediction Pipeline
+      - name: Run Prediction Script
         env:
           EE_PRIVATE_KEY: ${{ secrets.EE_PRIVATE_KEY }}
         run: |
           python daily_prediction.py
 
-      - name: Commit and Push latest maps
+      - name: Commit and Push new map
         run: |
           git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action Bot"
+          git config --local user.name "GitHub Action"
           git add daily_maps/
-          git commit -m "Automated prediction update for tomorrow" || echo "No changes to commit"
+          git commit -m "Automated prediction map update" || echo "No changes to commit"
           git pull origin main --rebase
           git push
