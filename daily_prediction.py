@@ -84,6 +84,13 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
         
     merged = gdf_base.merge(result_df, on='poly_uid')
     
+    # --- FIX 1: Simplify geometry safely BEFORE passing to Folium ---
+    merged['geometry'] = merged['geometry'].simplify(0.0005, preserve_topology=True)
+    
+    # --- FIX 2: Ensure data types are standard Python types for JSON serialization ---
+    merged['poly_uid'] = merged['poly_uid'].astype(str)
+    merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].astype(float)
+    
     # Save Compressed GeoJSON
     print("[EXPORT] Saving compressed GeoJSON...")
     temp_json = output_geojson_path.replace('.gz', '')
@@ -97,14 +104,21 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     m = folium.Map(location=[merged.geometry.centroid.y.mean(), merged.geometry.centroid.x.mean()], zoom_start=9)
     colormap = LinearColormap(colors=VIS_PALETTE, vmin=0, vmax=1).add_to(m)
     
-    # CRITICAL FIX: Use .get() to avoid KeyError during folium's internal validation test
+    # --- FIX 3: Convert GeoDataFrame to GeoJSON string explicitly for Folium ---
+    geojson_data = json.loads(merged.to_json())
+    
     folium.GeoJson(
-        merged.simplify(0.001),
+        geojson_data,
         style_function=lambda x: {
             'fillColor': colormap(x['properties'].get('Final_Dynamic_Susceptibility', 0)), 
-            'weight': 0.1
+            'color': 'black',
+            'weight': 0.1,
+            'fillOpacity': 0.7
         },
-        tooltip=folium.GeoJsonTooltip(fields=['poly_uid', 'Final_Dynamic_Susceptibility'])
+        tooltip=folium.GeoJsonTooltip(
+            fields=['poly_uid', 'Final_Dynamic_Susceptibility'],
+            aliases=['Polygon ID:', 'Susceptibility:']
+        )
     ).add_to(m)
     m.save(output_html_path)
 
