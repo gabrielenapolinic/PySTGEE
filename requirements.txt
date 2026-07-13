@@ -8,3 +8,4 @@ joblib
 fiona
 rasterio
 shapely
+pyogrio
