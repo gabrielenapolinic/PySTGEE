@@ -1,45 +1,42 @@
-name: Daily Landslide Prediction
+name: Daily Landslide Prediction Pipeline
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    # Esegue in automatico ogni notte alle 02:00 UTC per generare la mappa di domani
+    - cron: '0 2 * * *'
   workflow_dispatch:
+    # Permette il lancio manuale premendo il pulsante "Run workflow" su GitHub
 
 jobs:
   run-prediction:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
-          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install earthengine-api pandas geopandas numpy folium scikit-learn rasterio pillow matplotlib joblib branca
 
-      - name: Run Prediction Script
+      - name: Run Spatio-Temporal Prediction Pipeline
         env:
           EE_PRIVATE_KEY: ${{ secrets.EE_PRIVATE_KEY }}
         run: |
           python daily_prediction.py
 
-      - name: Commit and Push latest maps
+      - name: Commit and Push Latest Forecast Maps
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
-          git add daily_maps/ index.html # <-- AGGIUNTO index.html QUI
-          git commit -m "Automated prediction update for tomorrow" || echo "No changes to commit"
+          git add daily_maps/ index.html
+          git commit -m "Automated prediction update for tomorrow's forecast" || echo "No changes to commit"
           git pull origin main --rebase
           git push
