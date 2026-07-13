@@ -5,6 +5,9 @@
 ================================================================================
  PySTGEE: Automated Spatio-Temporal Landslide Prediction Pipeline
 ================================================================================
+ Executes autonomously on GitHub Actions.
+ Predictions are automatically generated for 'Tomorrow'.
+================================================================================
 """
 
 import os
@@ -30,7 +33,7 @@ OUTPUT_DIR = 'daily_maps'
 VIS_PALETTE = ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
 
 def authenticate_gee():
-    """Initializes GEE connection using environment secrets."""
+    """Initializes GEE connection."""
     print("[SYSTEM] Authenticating Earth Engine...")
     key_content = os.environ.get('EE_PRIVATE_KEY')
     if not key_content:
@@ -39,12 +42,11 @@ def authenticate_gee():
     credentials = ee.ServiceAccountCredentials(service_account_info['client_email'], key_data=key_content)
     ee.Initialize(credentials, project=EE_PROJECT)
 
-# --- CORREZIONE: Aggiunto 'best_days' alla firma della funzione ---
-def get_prediction_logic(target_date_str, static_df, model, original_predictors, dummies_map, best_days):
-    """Core ML logic: uses pre-trained pipeline + dynamic rainfall."""
+def get_prediction_logic(target_date_str, static_df, model, original_predictors, dummies_map):
+    """Core ML logic: Uses reindex to ensure all predictors exist."""
     df = static_df.copy()
     
-    # Encode categorical features
+    # 1. Encode categorical features safely
     if dummies_map is not None:
         for col, cats in dummies_map.items():
             if col in df.columns:
@@ -52,46 +54,36 @@ def get_prediction_logic(target_date_str, static_df, model, original_predictors,
                     df[f"{col}_{cat}"] = (df[col] == cat).astype(int)
                 df.drop(columns=[col], inplace=True)
     
-    # Predict
-    X_static = df[original_predictors].fillna(0)
+    # 2. Robust Prediction using reindex (Solves KeyError: '...' not in index)
+    # This automatically adds missing columns with 0.0, avoiding crashes.
+    X_static = df.reindex(columns=original_predictors, fill_value=0.0)
+    
+    # 3. Inference
     df['Susceptibility_Prob'] = model.predict_proba(X_static)[:, 1]
-    
-    # Rainfall Placeholder
-    df['Rn_m'] = 0.0 
-    
-    # Fusion
+    df['Rn_m'] = 0.0 # Placeholder for GEE extraction
     df['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df['Susceptibility_Prob']) * np.exp(-df['Rn_m'] / 200.0)
+    
     return df[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
 def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date):
     """Generates the GeoJSON (compressed) and the Interactive HTML Dashboard."""
-    # Load geometry and create 'poly_uid' to match result_df
     gdf_base = gpd.read_file(base_gpkg_path)
-    
-    # Generate poly_uid here
     gdf_base['poly_uid'] = [f"{round(x, 6)}_{round(y, 6)}" for x, y in zip(gdf_base.geometry.centroid.x, gdf_base.geometry.centroid.y)]
-    
-    # Simplify geometry
-    gdf_base['geometry'] = gdf_base['geometry'].simplify(0.001)
-    
-    # Merge prediction results
     merged = gdf_base.merge(result_df, on='poly_uid')
     
-    # Export Compressed GeoJSON
-    print(f"[EXPORT] Saving compressed GeoJSON...")
-    temp_json = output_geojson_path.replace('.gz', '')
+    # Save Compressed GeoJSON
+    out_gz = output_geojson_path
+    temp_json = out_gz.replace('.gz', '')
     merged.to_file(temp_json, driver="GeoJSON")
-    with open(temp_json, 'rb') as f_in, gzip.open(output_geojson_path, 'wb', compresslevel=9) as f_out:
+    with open(temp_json, 'rb') as f_in, gzip.open(out_gz, 'wb', compresslevel=9) as f_out:
         shutil.copyfileobj(f_in, f_out)
     os.remove(temp_json)
 
-    # Export Interactive HTML Map
-    print(f"[EXPORT] Generating HTML Dashboard...")
+    # Save Interactive HTML Map
     m = folium.Map(location=[merged.geometry.centroid.y.mean(), merged.geometry.centroid.x.mean()], zoom_start=9)
     colormap = LinearColormap(colors=VIS_PALETTE, vmin=0, vmax=1).add_to(m)
-    
     folium.GeoJson(
-        merged,
+        merged.simplify(0.001),
         style_function=lambda x: {'fillColor': colormap(x['properties']['Final_Dynamic_Susceptibility']), 'weight': 0.1},
         tooltip=folium.GeoJsonTooltip(fields=['poly_uid', 'Final_Dynamic_Susceptibility'])
     ).add_to(m)
@@ -100,35 +92,29 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
 if __name__ == "__main__":
     try:
         authenticate_gee()
-        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-        target_date = tomorrow.strftime('%Y-%m-%d')
+        target_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         
         cached_data = joblib.load(MODEL_PATH)
-        df_base = pd.read_csv(STATIC_PRED_CSV, low_memory=False)
         
-        # Robustness Guard
-        original_preds = cached_data.get('original_predictors', [])
-        for col in original_preds:
-            if col not in df_base.columns:
-                print(f"[WARNING] Missing predictor '{col}' detected. Filling with 0.0.")
-                df_base[col] = 0.0
+        # Load static morphology
+        df_base = pd.read_csv(STATIC_PRED_CSV, low_memory=False)
         
         # Run prediction
         results = get_prediction_logic(
             target_date, df_base, 
-            cached_data['model'], original_preds, 
-            cached_data.get('dummies_map'), 
-            cached_data.get('best_days', 7) # Ora i 6 argomenti sono corretti
+            cached_data['model'], 
+            cached_data.get('original_predictors', []), 
+            cached_data.get('dummies_map')
         )
         
-        # Define paths
+        # Paths
         out_gz = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.geojson.gz")
         out_html = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.html")
         
         # Export
         export_results(results, BASE_GPKG_PATH, out_gz, out_html, target_date)
         
-        # Create "latest" aliases
+        # Create "latest" aliases (Zero-Touch)
         shutil.copy(out_gz, os.path.join(OUTPUT_DIR, "latest_map.geojson.gz"))
         shutil.copy(out_html, os.path.join(OUTPUT_DIR, "latest_map.html"))
         
