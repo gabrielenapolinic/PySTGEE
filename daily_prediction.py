@@ -180,7 +180,9 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
 
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
-# OTTIMIZZAZIONE 2: Sostituito Fiona con pyogrio vettorializzato (100 volte più veloce)
+# ------------------------------------------------------------------------------
+# 4. GEOJSON EXPORT PIPELINE (CON COMPRESSIONE GZIP INTEGRATA)
+# ------------------------------------------------------------------------------
 def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     print(f"[EXPORT] Fast vectorized reconstruction from {base_gpkg_path}...")
     
@@ -200,8 +202,11 @@ def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     merged_gdf = gdf_base[['poly_uid', 'geometry']].merge(df_filtered, on='poly_uid', how='inner')
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    merged_gdf.to_file(output_path, driver="GeoJSON")
-    print(f"[EXPORT] Successfully wrote {len(merged_gdf)} records to {output_path}")
+    
+    # Salvataggio con compressione GZIP automatica per evitare il blocco dei 100MB di GitHub
+    print(f"[EXPORT] Compressing and writing {len(merged_gdf)} records to {output_path}...")
+    merged_gdf.to_file(output_path, driver="GeoJSON", compression="gzip")
+    print(f"[EXPORT] Successfully saved compressed map!")
 
 # ------------------------------------------------------------------------------
 # MAIN EXECUTION ROUTINE
@@ -235,7 +240,8 @@ if __name__ == "__main__":
             best_days=best_days
         )
         
-        output_geojson = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.geojson")
+        # Aggiornata l'estensione finale in .geojson.gz per ridurre il peso del 90%
+        output_geojson = os.path.join(OUTPUT_DIR, f"prediction_{target_date}.geojson.gz")
         export_prediction_to_geojson(final_results, BASE_GPKG_PATH, output_geojson)
         
         print("\n[SYSTEM] Daily workflow concluded successfully.")
