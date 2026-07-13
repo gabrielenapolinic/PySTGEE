@@ -195,7 +195,7 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
     df['Susceptibility_Prob'] = probs
 
     # Step 2: Dynamic Rainfall Extraction (ECMWF Forecast for Tomorrow)
-    target_dt = datetime.datetime.strptime(target_date_str, '%Y-%m-%d').date()
+    target_date = (datetime.date.today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
     is_future = target_dt >= datetime.date.today()
     source = 'ECMWF' if is_future else 'JAXA'
 
