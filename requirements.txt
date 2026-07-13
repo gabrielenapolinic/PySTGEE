@@ -9,3 +9,4 @@ fiona
 rasterio
 shapely
 pyogrio
+matplotlib
