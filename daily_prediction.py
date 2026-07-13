@@ -145,6 +145,10 @@ if __name__ == "__main__":
         # "Latest" Aliases for zero-touch web routing
         shutil.copy(out_gz, os.path.join(OUTPUT_DIR, "latest_map.geojson.gz"))
         shutil.copy(out_html, os.path.join(OUTPUT_DIR, "latest_map.html"))
+
+        shutil.copy(out_html, "index.html")
+        
+        print("[SUCCESS] Pipeline finished.")
         
         print("[SUCCESS] Pipeline finished.")
     except Exception as e:
