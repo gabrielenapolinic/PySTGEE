@@ -1,13 +1,19 @@
+# Core GEE and Data Processing
 earthengine-api
 pandas
 geopandas
 numpy
 polars
+
+# Machine Learning and Utilities
 scikit-learn==1.6.1
 joblib
 fiona
 rasterio
 shapely
 pyogrio
+
+# Visualization
 matplotlib
 folium
+branca
