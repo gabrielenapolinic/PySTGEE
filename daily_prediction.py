@@ -181,12 +181,14 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
 # ------------------------------------------------------------------------------
-# 4. GEOJSON EXPORT PIPELINE (OTTIMIZZATA PER RIDUZIONE PESO GEOMATICO)
+# 4. GEOJSON EXPORT PIPELINE (CON ANTEPRIMA VISIVA PNG PER GITHUB)
 # ------------------------------------------------------------------------------
 def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     import gzip
     import shutil
-    import json
+    import matplotlib
+    matplotlib.use('Agg')  # Fondamentale per disegnare su server Linux headless (GitHub Actions)
+    import matplotlib.pyplot as plt
     
     print(f"[EXPORT] Fast vectorized reconstruction from {base_gpkg_path}...")
     
@@ -203,34 +205,61 @@ def export_prediction_to_geojson(result_df, base_gpkg_path, output_path):
     df_filtered = result_df.copy()
     df_filtered['poly_uid'] = df_filtered['poly_uid'].astype(str)
     
-    # Unione mantenendo SOLO le colonne di output essenziali
     colonne_essenziali = ['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']
     df_da_unire = df_filtered[[c for c in colonne_essenziali if c in df_filtered.columns]]
     
     merged_gdf = gdf_base[['poly_uid', 'geometry']].merge(df_da_unire, on='poly_uid', how='inner')
     
-    # Arrotondiamo le geometrie per eliminare micro-vertici sprecati e ridurre drasticamente il testo
+    # --------------------------------------------------------------------------
+    # NOVITÀ: CREAZIONE ANTEPRIMA GRAFICA PNG PER LA VISUALIZZAZIONE SU GITHUB
+    # --------------------------------------------------------------------------
+    try:
+        print("[EXPORT] Generating visual PNG map preview for GitHub...")
+        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+        
+        # Disegniamo la mappa usando una scala di colori (da giallo a rosso allarme)
+        merged_gdf.plot(
+            column='Final_Dynamic_Susceptibility',
+            ax=ax,
+            cmap='YlOrRd',  # Scala colore Giallo -> Arancio -> Rosso
+            legend=True,
+            legend_kwds={'label': "Indice di Suscettibilità Dinamica", 'orientation': "horizontal", 'pad': 0.03},
+            vmin=0, 
+            vmax=1
+        )
+        
+        # Titolo e pulizia dei bordi
+        target_date = os.path.basename(output_path).replace('prediction_', '').replace('.geojson.gz', '')
+        ax.set_title(f"Suscettibilità Frane Spazio-Temporale | Data: {target_date}", fontsize=14, fontweight='bold', pad=15)
+        ax.set_axis_off()  # Rimuove le cornici e i numeri degli assi per un look pulito
+        
+        # Salviamo l'immagine .png nella stessa cartella
+        png_path = output_path.replace('.geojson.gz', '.png').replace('.geojson', '.png')
+        plt.savefig(png_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+        print(f"[EXPORT] PNG visual map successfully saved to: {png_path}")
+    except Exception as e_png:
+        print(f"[!] Warning: Could not generate PNG preview: {str(e_png)}")
+    # --------------------------------------------------------------------------
+
+    # Riduzione peso geomatico (Arrotondamenti e pulizia vertici per il file .gz)
     merged_gdf.geometry = merged_gdf.geometry.set_precision(1e-6)
     
-    # Arrotondiamo anche le probabilità e la pioggia a 4 decimali per non scrivere float infiniti nel JSON
     for col in ['Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']:
         if col in merged_gdf.columns:
             merged_gdf[col] = merged_gdf[col].round(4)
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    # 1. Salviamo temporaneamente il GeoJSON non compresso
     temp_geojson = output_path.replace('.gz', '')
     print(f"[EXPORT] Writing {len(merged_gdf)} records to temporary geometry file...")
     merged_gdf.to_file(temp_geojson, driver="GeoJSON")
     
-    # 2. Lo comprimiamo con il livello di compressione massimo (9)
     print(f"[EXPORT] Compressing to {output_path} with max GZIP compression...")
     with open(temp_geojson, 'rb') as f_in:
         with gzip.open(output_path, 'wb', compresslevel=9) as f_out:
             shutil.copyfileobj(f_in, f_out)
             
-    # 3. Rimuoviamo il file non compresso
     os.remove(temp_geojson)
     print(f"[EXPORT] Successfully generated and ultra-compressed map: {output_path}!")
 
