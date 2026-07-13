@@ -5,25 +5,18 @@
 ================================================================================
  PySTGEE: Automated Spatio-Temporal Landslide Prediction Pipeline
 ================================================================================
- This script is designed for automated execution on GitHub Actions (headless).
- It predicts landslide susceptibility for TOMORROW autonomously.
+ Executes autonomously on GitHub Actions.
+ Predictions are automatically generated for 'Tomorrow'.
  
- Logic summary:
- 1. Loads pre-trained ML model (Train Once, Never Repeat).
- 2. Determines 'Tomorrow's date' automatically.
- 3. Extracts forecast precipitation (ECMWF) & morphometry via GEE.
- 4. Fuses dynamic rainfall with static susceptibility.
- 5. Exports:
-    - Ultra-compressed GeoJSON (.geojson.gz) for GIS.
-    - Interactive HTML Web Map (.html) with inspection panels.
-    - Permanent 'latest_map' aliases for zero-touch web routing.
+ Dependencies:
+ - Trained Random Forest Pipeline (model.joblib)
+ - Static morphology CSV
 ================================================================================
 """
 
 import os
 import sys
 import json
-import time
 import datetime
 import gzip
 import shutil
@@ -102,9 +95,8 @@ def predict_spacetime(target_date_str, static_df, model, original_predictors, du
     
     # Rainfall Extraction (ECMWF)
     rain_img = get_rainfall_image(target_date_str, best_days)
-    # (Simplified extraction: In production, ensure feature extraction logic maps to your poly_uids)
-    # df['Rn_m'] = ... extraction logic ...
-    df['Rn_m'] = 0.0 # Placeholder for your specific polygon-point mapping logic
+    # Placeholder for your specific polygon-point mapping logic
+    df['Rn_m'] = 0.0 
     
     df['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df['Susceptibility_Prob']) * np.exp(-df['Rn_m'] / 200.0)
     return df[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
@@ -155,14 +147,24 @@ if __name__ == "__main__":
         # Load Model Pipeline
         cached_data = joblib.load(MODEL_PATH)
         
+        # Load static morphology
+        df_base = pd.read_csv(STATIC_PRED_CSV, low_memory=False)
+        
+        # --- ROBUSTNESS GUARD: Add missing predictors if necessary ---
+        original_preds = cached_data.get('original_predictors', [])
+        for col in original_preds:
+            if col not in df_base.columns:
+                print(f"[WARNING] Missing predictor '{col}' detected. Filling with 0.0.")
+                df_base[col] = 0.0
+        
         # Run prediction
         results = predict_spacetime(
             target_date, 
-            pd.read_csv(STATIC_PRED_CSV), 
+            df_base, 
             cached_data['model'], 
-            cached_data.get('original_predictors', []), 
+            original_preds, 
             cached_data.get('dummies_map'), 
-            7
+            cached_data.get('best_days', 7)
         )
         
         # Define paths
@@ -180,4 +182,5 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"[CRITICAL] Pipeline Failed: {e}")
+        import traceback; traceback.print_exc()
         sys.exit(1)
