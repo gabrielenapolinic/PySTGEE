@@ -189,7 +189,7 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     df_with_rain = extract_rainfall_for_polygons(df, target_date_str, best_days, source=source, chunk_size=2000)
     
     # 5. Spatio-Temporal Combined Hazard Calculation
-    print("[ML] Combining static risk with antecedent rainfall accumulation...")
+    print("[ML] Combining static susceptibility with antecedent rainfall accumulation...")
     rain_col = f'Rn{best_days}_m'
     df_with_rain['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / 200.0)
     df_with_rain.rename(columns={rain_col: 'Rn_m'}, inplace=True)
@@ -287,7 +287,8 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     max_val = merged['Final_Dynamic_Susceptibility'].max()
     mean_val = merged['Final_Dynamic_Susceptibility'].mean()
     poly_count = len(merged)
-    rain_active = (merged['Rn_m'] > 0).sum() if 'Rn_m' in merged.columns else 0
+    mean_rain = merged['Rn_m'].mean() if 'Rn_m' in merged.columns else 0.0
+    max_rain = merged['Rn_m'].max() if 'Rn_m' in merged.columns else 0.0
     
     ui_html = f"""
     <style>
@@ -372,9 +373,10 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
             <span style="font-size: 12px; background: #e9ecef; padding: 2px 6px; border-radius: 4px;">{target_date}</span>
         </div>
         <div class="stat-row"><span>Monitored Units:</span> <span style="font-weight:600;">{poly_count:,}</span></div>
-        <div class="stat-row"><span>Active Rain Zones:</span> <span style="font-weight:600;">{rain_active:,}</span></div>
-        <div class="stat-row"><span>Mean Risk Index:</span> <span style="font-weight:600;">{mean_val:.3f}</span></div>
-        <div class="stat-row"><span>Max Risk Index:</span> <span class="stat-val">{max_val:.3f}</span></div>
+        <div class="stat-row"><span>Pioggia Media:</span> <span style="font-weight:600;">{mean_rain:.2f} mm</span></div>
+        <div class="stat-row"><span>Pioggia Cumulata Max:</span> <span style="font-weight:600;">{max_rain:.2f} mm</span></div>
+        <div class="stat-row"><span>Mean Susceptibility:</span> <span style="font-weight:600;">{mean_val:.3f}</span></div>
+        <div class="stat-row"><span>Max Susceptibility:</span> <span class="stat-val">{max_val:.3f}</span></div>
         <a href="daily_maps/latest_map.geojson" class="download-btn" download>&#11015; Download GIS Data (.geojson)</a>
     </div>
     
