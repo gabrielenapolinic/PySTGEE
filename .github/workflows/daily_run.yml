@@ -24,7 +24,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install earthengine-api pandas geopandas numpy folium scikit-learn rasterio pillow matplotlib joblib branca
+          pip install -r requirements.txt
 
       - name: Run Spatio-Temporal Prediction Pipeline
         env:
