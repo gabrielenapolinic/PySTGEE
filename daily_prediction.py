@@ -191,10 +191,13 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     # 5. Spatio-Temporal Combined Hazard Calculation
     print("[ML] Combining static susceptibility with antecedent rainfall accumulation...")
     rain_col = f'Rn{best_days}_m'
-    df_with_rain['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / 200.0)
+    
+    # AGGIORNAMENTO: Sovrascrive direttamente Susceptibility_Prob
+    df_with_rain['Susceptibility_Prob'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / 200.0)
     df_with_rain.rename(columns={rain_col: 'Rn_m'}, inplace=True)
     
-    return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
+    # Ritorna solo le colonne necessarie
+    return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m']]
 
 def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date):
     """Generates uncompressed GeoJSON and high-fidelity Raster-on-HTML Dashboard."""
@@ -207,7 +210,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     if len(gdf_base) == len(result_df):
         print("[JOIN] Exact row count match! Mapping predictions directly by index to guarantee 100% polygon coverage.")
         merged = gdf_base.copy()
-        merged['Final_Dynamic_Susceptibility'] = result_df['Final_Dynamic_Susceptibility'].values
+        # AGGIORNAMENTO: Usa direttamente Susceptibility_Prob
         merged['Susceptibility_Prob'] = result_df['Susceptibility_Prob'].values
         merged['Rn_m'] = result_df['Rn_m'].values if 'Rn_m' in result_df.columns else 0.0
         if 'poly_uid' not in merged.columns:
@@ -228,7 +231,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     elif merged.crs != "EPSG:4326":
         merged = merged.to_crs("EPSG:4326")
         
-    merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].fillna(0.0).astype(float)
+    merged['Susceptibility_Prob'] = merged['Susceptibility_Prob'].fillna(0.0).astype(float)
     merged['poly_uid'] = merged['poly_uid'].astype(str)
     
     # --- RASTERIZATION FOR WEB MAP ---
@@ -245,7 +248,8 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
         
     transform_mat = rasterio.transform.from_bounds(minx, miny, maxx, maxy, width, height)
     
-    shapes_for_rasterize = [(geom, val) for geom, val in zip(merged.geometry, merged['Final_Dynamic_Susceptibility']) if geom is not None and not geom.is_empty]
+    # AGGIORNAMENTO: Rasterizza su Susceptibility_Prob
+    shapes_for_rasterize = [(geom, val) for geom, val in zip(merged.geometry, merged['Susceptibility_Prob']) if geom is not None and not geom.is_empty]
     
     raster = rasterio.features.rasterize(
         shapes=shapes_for_rasterize,
@@ -284,8 +288,9 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     
     folium.LayerControl(position="topleft").add_to(m)
     
-    max_val = merged['Final_Dynamic_Susceptibility'].max()
-    mean_val = merged['Final_Dynamic_Susceptibility'].mean()
+    # AGGIORNAMENTO: Calcolo statistiche
+    max_val = merged['Susceptibility_Prob'].max()
+    mean_val = merged['Susceptibility_Prob'].mean()
     poly_count = len(merged)
     mean_rain = merged['Rn_m'].mean() if 'Rn_m' in merged.columns else 0.0
     max_rain = merged['Rn_m'].max() if 'Rn_m' in merged.columns else 0.0
@@ -395,7 +400,8 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
 
     # --- SAVE UNCOMPRESSED GEOJSON ---
     print("[EXPORT] Optimizing and saving uncompressed GeoJSON for GIS users...")
-    export_gdf = merged[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility', 'geometry']].copy()
+    # AGGIORNAMENTO: Esporta il nuovo campo
+    export_gdf = merged[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'geometry']].copy()
     export_gdf['geometry'] = export_gdf['geometry'].simplify(0.0001, preserve_topology=True)
     export_gdf.to_file(output_geojson_path, driver="GeoJSON")
     print(f"[SUCCESS] GeoJSON saved uncompressed: {os.path.getsize(output_geojson_path) / (1024*1024):.2f} MB")
