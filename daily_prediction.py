@@ -373,16 +373,17 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     </style>
     
     <div class="pystgee-panel dashboard-panel">
-        <div class="pystgee-title">
-            <span>PySTGEE Forecast</span>
-            <span style="font-size: 12px; background: #e9ecef; padding: 2px 6px; border-radius: 4px;">{target_date}</span>
-        </div>
-        <div class="stat-row"><span>Mean Rainfall:</span> <span style="font-weight:600;">{mean_rain:.2f} mm</span></div>
-        <div class="stat-row"><span>Max Cumulative Rainfall:</span> <span style="font-weight:600;">{max_rain:.2f} mm</span></div>
-        <div class="stat-row"><span>Mean Susceptibility:</span> <span style="font-weight:600;">{mean_val:.3f}</span></div>
-        <div class="stat-row"><span>Max Susceptibility:</span> <span class="stat-val">{max_val:.3f}</span></div>
-        <a href="daily_maps/latest_map.geojson" class="download-btn" download>&#11015; Download GIS Data (.geojson)</a>
+    <div class="pystgee-title">
+        <span>PySTGEE Forecast</span>
+        <span style="font-size: 12px; background: #e9ecef; padding: 2px 6px; border-radius: 4px;">{target_date}</span>
     </div>
+    <div class="stat-row"><span>Cumulative Rainfall Days:</span> <span style="font-weight:600;">{best_days}</span></div>
+    <div class="stat-row"><span>Mean Rainfall:</span> <span style="font-weight:600;">{mean_rain:.2f} mm</span></div>
+    <div class="stat-row"><span>Max Cumulative Rainfall:</span> <span style="font-weight:600;">{max_rain:.2f} mm</span></div>
+    <div class="stat-row"><span>Mean Susceptibility:</span> <span style="font-weight:600;">{mean_val:.3f}</span></div>
+    <div class="stat-row"><span>Max Susceptibility:</span> <span class="stat-val">{max_val:.3f}</span></div>
+    <a href="daily_maps/latest_map.geojson" class="download-btn" download>&#11015; Download GIS Data (.geojson)</a>
+</div>
     
     <div class="pystgee-panel legend-panel">
         <div style="font-weight: bold; font-size: 13px; margin-bottom: 4px;">Landslide Susceptibility Index</div>
