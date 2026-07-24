@@ -491,7 +491,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
             <span>PySTGEE Forecast</span>
             <span style="font-size: 12px; background: #e9ecef; padding: 2px 6px; border-radius: 4px;">{target_date}</span>
         </div>
-        <div class="stat-row"><span>Monitored Units:</span> <span style="font-weight:600;">{poly_count:,.0f}</span></div>
         <div class="stat-row"><span>Mean Cumulative Rainfall ({best_days} Days):</span> <span style="font-weight:600;">{mean_rain:.2f} mm</span></div>
         <div class="stat-row"><span>Max Cumulative Rainfall ({best_days} Days):</span> <span style="font-weight:600;">{max_rain:.2f} mm</span></div>
         <div class="stat-row"><span>Mean Susceptibility:</span> <span style="font-weight:600;">{mean_val:.3f}</span></div>
