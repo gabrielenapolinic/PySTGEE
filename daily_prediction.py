@@ -42,7 +42,6 @@ MODEL_PATH = 'MASTER_MODEL_Japan-Kii-lsdJapan.joblib'
 STATIC_PRED_CSV = 'Kii_fixedLithoRF_U.gpkg_PRED_static.csv'
 BASE_GPKG_PATH = 'Kii_fixedLithoRF_U.gpkg'
 OUTPUT_DIR = 'daily_maps'
-DATE_COLUMN = 'formatted_'
 
 # Exact Palette: Green -> White -> Dark Red
 VIS_PALETTE = ['#006b0b', '#1b7b25', '#4e9956', '#dbeadd', '#ffffff', '#f0b2ae', '#eb958f', '#df564d', '#d10e00']
@@ -274,7 +273,14 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     
     # 3. Static Inference
     print("[ML] Predicting static morphological susceptibility...")
-    df['Susceptibility_Prob'] = model.predict_proba(X_static)[:, 1]
+    
+    try:
+        probs = model.predict_proba(X_static)[:, 1]
+    except Exception as e:
+        print(f"  [!] DataFrame predict failed, using numpy fallback: {e}")
+        probs = model.predict_proba(X_static.to_numpy())[:, 1]
+        
+    df['Susceptibility_Prob'] = probs
     
     # 4. Dynamic Rainfall Extraction from GEE
     target_dt = datetime.datetime.strptime(target_date_str, '%Y-%m-%d').date()
@@ -282,7 +288,7 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     source = 'ECMWF' if is_future else 'JAXA'
     
     df_with_rain = extract_rainfall_for_polygons(df, target_date_str, best_days, source=source, chunk_size=2000)
-    
+
     # Autonomous Monthly Reference Rainfall Calculation
     print("[LOG] Computing monthly max rainfall reference (train_ref_rain) autonomously...")
     if 'lon' in df_with_rain.columns and 'lat' in df_with_rain.columns:
@@ -303,20 +309,24 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
 
     train_ref_rain = get_monthly_max_precip(target_date_str, region)
     print(f"[LOG] Computed monthly max reference rain: {train_ref_rain:.2f} mm")
-    
+
     # 5. Spatio-Temporal Combined Hazard Calculation
     print("[ML] Combining static susceptibility with antecedent rainfall accumulation...")
     rain_col = f'Rn{best_days}_m'
     
+    # Handle division by zero: fallback to static base probability if rain is 0.0 mm
     if train_ref_rain > 0:
-        df_with_rain['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / train_ref_rain)
+        # Overwrite Susceptibility_Prob directly to match Colab architecture
+        df_with_rain['Susceptibility_Prob'] = 1.0 - (
+            1.0 - df_with_rain['Susceptibility_Prob']
+        ) * np.exp(-df_with_rain[rain_col] / train_ref_rain)
     else:
         print("  [Notice] Monthly max rain is 0.00 mm. Susceptibility remains equal to static base probability.")
-        df_with_rain['Final_Dynamic_Susceptibility'] = df_with_rain['Susceptibility_Prob']
         
-    df_with_rain.rename(columns={rain_col: 'Rn_m'}, inplace=True)
+    df_with_rain['Rn_m'] = df_with_rain[rain_col]
+    df_with_rain['proc_date'] = target_date_str
     
-    return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
+    return df_with_rain[['poly_uid', 'proc_date', 'Susceptibility_Prob', 'Rn_m']]
 
 def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date, best_days):
     """Generates optimized GeoJSON and high-fidelity Raster-on-HTML Dashboard."""
@@ -328,7 +338,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     if len(gdf_base) == len(result_df):
         print("[JOIN] Exact row count match! Mapping predictions directly by index to guarantee 100% polygon coverage.")
         merged = gdf_base.copy()
-        merged['Final_Dynamic_Susceptibility'] = result_df['Final_Dynamic_Susceptibility'].values
+        merged['proc_date'] = result_df['proc_date'].values
         merged['Susceptibility_Prob'] = result_df['Susceptibility_Prob'].values
         merged['Rn_m'] = result_df['Rn_m'].values if 'Rn_m' in result_df.columns else 0.0
         if 'poly_uid' not in merged.columns:
@@ -349,7 +359,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     elif merged.crs != "EPSG:4326":
         merged = merged.to_crs("EPSG:4326")
         
-    merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].fillna(0.0).astype(float)
+    merged['Susceptibility_Prob'] = merged['Susceptibility_Prob'].fillna(0.0).astype(float)
     merged['poly_uid'] = merged['poly_uid'].astype(str)
     
     print("[EXPORT] Rasterizing geometries for web visualization...")
@@ -365,7 +375,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
         
     transform_mat = rasterio.transform.from_bounds(minx, miny, maxx, maxy, width, height)
     
-    shapes_for_rasterize = [(geom, val) for geom, val in zip(merged.geometry, merged['Final_Dynamic_Susceptibility']) if geom is not None and not geom.is_empty]
+    shapes_for_rasterize = [(geom, val) for geom, val in zip(merged.geometry, merged['Susceptibility_Prob']) if geom is not None and not geom.is_empty]
     
     raster = rasterio.features.rasterize(
         shapes=shapes_for_rasterize,
@@ -403,8 +413,8 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     
     folium.LayerControl(position="topleft").add_to(m)
     
-    max_val = merged['Final_Dynamic_Susceptibility'].max()
-    mean_val = merged['Final_Dynamic_Susceptibility'].mean()
+    max_val = merged['Susceptibility_Prob'].max()
+    mean_val = merged['Susceptibility_Prob'].mean()
     poly_count = len(merged)
     mean_rain = merged['Rn_m'].mean() if 'Rn_m' in merged.columns else 0.0
     max_rain = merged['Rn_m'].max() if 'Rn_m' in merged.columns else 0.0
@@ -491,6 +501,7 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
             <span>PySTGEE Forecast</span>
             <span style="font-size: 12px; background: #e9ecef; padding: 2px 6px; border-radius: 4px;">{target_date}</span>
         </div>
+        <div class="stat-row"><span>Monitored Units:</span> <span style="font-weight:600;">{poly_count:,.0f}</span></div>
         <div class="stat-row"><span>Mean Cumulative Rainfall ({best_days} Days):</span> <span style="font-weight:600;">{mean_rain:.2f} mm</span></div>
         <div class="stat-row"><span>Max Cumulative Rainfall ({best_days} Days):</span> <span style="font-weight:600;">{max_rain:.2f} mm</span></div>
         <div class="stat-row"><span>Mean Susceptibility:</span> <span style="font-weight:600;">{mean_val:.3f}</span></div>
@@ -515,8 +526,8 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     # --- SAVE UNCOMPRESSED GEOJSON (EXTREME OPTIMIZATION) ---
     print("[EXPORT] Ottimizzazione estrema del GeoJSON per rispettare i limiti di GitHub Pages...")
     
-    # 1. Conserviamo SOLO le colonne strettamente essenziali 
-    cols_to_keep = ['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility', 'geometry']
+    # 1. Conserviamo SOLO le colonne che fanno combaciare l'output con lo standard di Colab
+    cols_to_keep = ['poly_uid', 'proc_date', 'Susceptibility_Prob', 'Rn_m', 'geometry']
     export_gdf = merged[[c for c in cols_to_keep if c in merged.columns]].copy()
     
     # 2. Arrotondiamo i valori numerici per ridurre significativamente i byte necessari a scriverli nel JSON
@@ -524,8 +535,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
         export_gdf['Susceptibility_Prob'] = export_gdf['Susceptibility_Prob'].round(3)
     if 'Rn_m' in export_gdf.columns:
         export_gdf['Rn_m'] = export_gdf['Rn_m'].round(1)
-    if 'Final_Dynamic_Susceptibility' in export_gdf.columns:
-        export_gdf['Final_Dynamic_Susceptibility'] = export_gdf['Final_Dynamic_Susceptibility'].round(3)
     
     # 3. Semplificazione topologica (rimuove i vertici ridondanti senza alterare la forma generale)
     export_gdf['geometry'] = export_gdf['geometry'].simplify(0.0005, preserve_topology=True)
@@ -542,12 +551,6 @@ if __name__ == "__main__":
         cached_data = joblib.load(MODEL_PATH)
         df_base = pd.read_csv(STATIC_PRED_CSV, low_memory=False)
         
-        # Filtro per le zone geografiche di interesse
-        df_base = df_base[~df_base.astype(str).apply(lambda row: row.str.contains('Peschici', case=False).any(), axis=1)]
-        mask_napoli = df_base.astype(str).apply(lambda row: row.str.contains('Napoli|Giampilieri', case=False).any(), axis=1)
-        if mask_napoli.any():
-            df_base = df_base[mask_napoli]
-            
         best_days = cached_data.get('best_days', 14)
         print(f"[SYSTEM] Model based on {best_days}-day antecedent rainfall window.")
         
