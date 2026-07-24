@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
 EE_PROJECT = 'stgee-dataset'
-MODEL_PATH = 'MASTER_MODEL_Japan_fixedLithoRF_U_Kii_fixedLithoRF_U_lsdJapan6690_final.joblib'
+MODEL_PATH = 'MASTER_MODEL_Japan-Kii-lsdJapan.joblib'
 STATIC_PRED_CSV = 'Kii_fixedLithoRF_U.gpkg_PRED_static.csv'
 BASE_GPKG_PATH = 'Kii_fixedLithoRF_U.gpkg'
 OUTPUT_DIR = 'daily_maps'
