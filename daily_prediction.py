@@ -179,7 +179,15 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     
     # 3. Static Inference
     print("[ML] Predicting static morphological susceptibility...")
-    df['Susceptibility_Prob'] = model.predict_proba(X_static)[:, 1]
+    
+    # Extract Scaler from pipeline and predict
+    try:
+        probs = model.predict_proba(X_static)[:, 1]
+    except Exception as e:
+        print(f"  [!] DataFrame predict failed, using numpy fallback: {e}")
+        probs = model.predict_proba(X_static.to_numpy())[:, 1]
+        
+    df['Susceptibility_Prob'] = probs
     
     # 4. Dynamic Rainfall Extraction from GEE
     target_dt = datetime.datetime.strptime(target_date_str, '%Y-%m-%d').date()
@@ -187,12 +195,50 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     source = 'ECMWF' if is_future else 'JAXA'
     
     df_with_rain = extract_rainfall_for_polygons(df, target_date_str, best_days, source=source, chunk_size=2000)
-    
+
+    # Autonomous Monthly Reference Rainfall Calculation
+    print("[LOG] Computing monthly max rainfall reference (train_ref_rain) autonomously...")
+    if 'lon' in df_with_rain.columns and 'lat' in df_with_rain.columns:
+        lons = df_with_rain['lon'].dropna().values
+        lats = df_with_rain['lat'].dropna().values
+    else:
+        coords = df_with_rain['poly_uid'].apply(lambda x: pd.Series(extract_coordinates(x)))
+        lons = coords[0].dropna().values
+        lats = coords[1].dropna().values
+
+    if len(lons) == 0:
+        raise ValueError('No valid coordinates found to compute study area bounding box.')
+
+    min_lon, max_lon = lons.min(), lons.max()
+    min_lat, max_lat = lats.min(), lats.max()
+    margin = 0.01
+    region = ee.Geometry.Rectangle([min_lon - margin, min_lat - margin, max_lon + margin, max_lat + margin])
+
+    train_ref_rain = get_monthly_max_precip(target_date_str, region)
+    print(f"[LOG] Computed monthly max reference rain: {train_ref_rain:.2f} mm")
+
     # 5. Spatio-Temporal Combined Hazard Calculation
     print("[ML] Combining static susceptibility with antecedent rainfall accumulation...")
     rain_col = f'Rn{best_days}_m'
-    df_with_rain['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / 200.0)
+    
+    # Prevent division by zero
+    if train_ref_rain > 0:
+        df_with_rain['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / train_ref_rain)
+    else:
+        print("  [Notice] Monthly max rain is 0.00 mm. Susceptibility remains equal to static base probability.")
+        df_with_rain['Final_Dynamic_Susceptibility'] = df_with_rain['Susceptibility_Prob']
+        
     df_with_rain.rename(columns={rain_col: 'Rn_m'}, inplace=True)
+    
+    # --- FIX: MIN-MAX NORMALIZATION (SCALA 0-1) ---
+    print("[ML] Applying Min-Max Normalization (0-1 scale) to final susceptibility...")
+    min_susc = df_with_rain['Final_Dynamic_Susceptibility'].min()
+    max_susc = df_with_rain['Final_Dynamic_Susceptibility'].max()
+    
+    if max_susc > min_susc:
+        df_with_rain['Final_Dynamic_Susceptibility'] = (df_with_rain['Final_Dynamic_Susceptibility'] - min_susc) / (max_susc - min_susc)
+    else:
+        df_with_rain['Final_Dynamic_Susceptibility'] = 0.0
     
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
