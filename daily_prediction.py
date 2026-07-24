@@ -19,7 +19,6 @@ import time
 import datetime
 import shutil
 import warnings
-import gzip
 from io import BytesIO
 import base64
 import joblib
@@ -39,7 +38,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
 EE_PROJECT = 'stgee-dataset'
-MODEL_PATH = 'MASTER_MODEL_Japan-Kii-lsdJapan.joblib'
+MODEL_PATH = 'MASTER_MODEL_Japan-Kii-lsdJapan.joblib' 
 STATIC_PRED_CSV = 'Kii_fixedLithoRF_U.gpkg_PRED_static.csv'
 BASE_GPKG_PATH = 'Kii_fixedLithoRF_U.gpkg'
 OUTPUT_DIR = 'daily_maps'
@@ -87,16 +86,108 @@ def get_rainfall_image(target_date_str, days, source='JAXA'):
         col = dataset.filterDate(start, end)
         # Convert m/s -> mm/h (1 m/s = 3,600,000 mm/h).
         # NOTE: Divided by 12.0 to normalize overlapping forecast runs in Earth Engine
-        # preventing artificial 1000+ mm saturation and keeping precipitation realistic.
         precip_mm_h = col.map(lambda img: img.multiply(3600).rename('precip').copyProperties(img, img.propertyNames()))
         img = ee.Image(ee.Algorithms.If(precip_mm_h.size().gt(0), precip_mm_h.sum().divide(12.0), ee.Image(0)))
-        return img.unmask(0).rename(f'Rn{days}_m').toFloat()
+        return img.unmask(0).resample('bilinear').rename(f'Rn{days}_m').toFloat()
     else:
         # Historical satellite observations (GSMaP Operational mm/hr)
         dataset = ee.ImageCollection("JAXA/GPM_L3/GSMaP/v8/operational").select('hourlyPrecipRateGC')
         col = dataset.filterDate(start, d_target)
         img = ee.Image(ee.Algorithms.If(col.size().gt(0), col.sum(), ee.Image(0)))
-        return img.unmask(0).rename(f'Rn{days}_m').toFloat()
+        return img.unmask(0).resample('bilinear').rename(f'Rn{days}_m').toFloat()
+
+def get_monthly_max_precip(target_date_str, geometry):
+    """Compute monthly maximum daily precipitation (mm) over target geometry."""
+    d = ee.Date(target_date_str)
+    start_month = ee.Date.fromYMD(d.get('year'), d.get('month'), 1)
+    end_month = start_month.advance(1, 'month')
+    days_in_month = end_month.difference(start_month, 'day')
+    days = ee.List.sequence(0, days_in_month.subtract(1))
+
+    # Evaluate temporal forecast regime
+    oggi_ee = ee.Date(datetime.date.today().isoformat())
+    futuro = d.difference(oggi_ee, 'day').gte(0).getInfo()
+
+    # Initialize candidate collections
+    ecmwf_coll = (
+        ee.ImageCollection('ECMWF/NRT_FORECAST/IFS/OPER')
+        .filterDate(start_month, end_month.advance(1, 'day'))
+        .filter(ee.Filter.eq('forecast_time', 0))
+        .filter(ee.Filter.eq('forecast_hour', 24))
+        .select('total_precipitation')
+    )
+
+    gsmap_coll = (
+        ee.ImageCollection('JAXA/GPM_L3/GSMaP/v8/operational')
+        .filterDate(start_month, end_month)
+        .select('hourlyPrecipRateGC')
+    )
+
+    # Dynamic dataset routing based on data availability
+    if futuro:
+        if ecmwf_coll.size().getInfo() > 0:
+            source_coll = ecmwf_coll
+            is_ecmwf = True
+        else:
+            source_coll = gsmap_coll
+            is_ecmwf = False
+    else:
+        if gsmap_coll.size().getInfo() > 0:
+            source_coll = gsmap_coll
+            is_ecmwf = False
+        else:
+            source_coll = ecmwf_coll
+            is_ecmwf = True
+
+    if source_coll.size().getInfo() == 0:
+        raise ValueError(
+            f'No rainfall data available in either ECMWF or GSMaP for month {target_date_str[:7]}.'
+        )
+
+    if is_ecmwf:
+        def make_daily_img(d_offset):
+            day_start = start_month.advance(d_offset, 'day')
+            day_end = day_start.advance(1, 'day')
+            filtered = source_coll.filterDate(day_end, day_end.advance(1, 'hour'))
+            img = ee.Image(ee.Algorithms.If(
+                filtered.size().gt(0),
+                filtered.first(),
+                ee.Image.constant(0).rename('total_precipitation')
+            ))
+            return img.multiply(1000).rename('rain').set('system:time_start', day_start.millis())
+        daily_imgs = ee.ImageCollection.fromImages(days.map(make_daily_img))
+        scale_val = 10000
+    else:
+        def make_daily_img(d_offset):
+            day_start = start_month.advance(d_offset, 'day')
+            day_end = day_start.advance(1, 'day')
+            filtered = source_coll.filterDate(day_start, day_end)
+            img = ee.Image(ee.Algorithms.If(
+                filtered.size().gt(0),
+                filtered.sum(),
+                ee.Image.constant(0).rename('hourlyPrecipRateGC')
+            ))
+            return img.rename('rain').set('system:time_start', day_start.millis())
+        daily_imgs = ee.ImageCollection.fromImages(days.map(make_daily_img))
+        scale_val = 11132
+
+    # Reduce daily rasters to spatial maximum within target geometry
+    daily_max = daily_imgs.map(
+        lambda img: ee.Feature(
+            None,
+            {'max_val': img.unmask(0).resample('bilinear').reduceRegion(
+                    reducer=ee.Reducer.max(),
+                    geometry=geometry,
+                    scale=scale_val,
+                    maxPixels=1e9,
+                ).get('rain', 0)}
+        )
+    )
+
+    # Aggregate absolute spatial maximum across all days of the month
+    overall_max = daily_max.aggregate_max('max_val')
+    val = ee.Number(ee.Algorithms.If(overall_max, overall_max, 0.0))
+    return val.getInfo()
 
 def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JAXA', chunk_size=2000):
     """Extracts cumulative rainfall for each polygon centroid using GEE reduceRegions in robust batches."""
@@ -104,10 +195,12 @@ def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JA
     print(f"[GEE] Building {source} rainfall image for {days} days ending on {target_date_str}...")
     rain_img = get_rainfall_image(target_date_str, days, source=source)
 
-    df_coords = polygons_df[['poly_uid']].drop_duplicates().copy()
-    df_coords[['lon', 'lat']] = df_coords['poly_uid'].apply(lambda x: pd.Series(extract_coordinates(x)))
+    if 'lon' in polygons_df.columns and 'lat' in polygons_df.columns:
+        df_coords = polygons_df[['poly_uid', 'lon', 'lat']].drop_duplicates(subset=['poly_uid']).copy()
+    else:
+        df_coords = polygons_df[['poly_uid']].drop_duplicates().copy()
+        df_coords[['lon', 'lat']] = df_coords['poly_uid'].apply(lambda x: pd.Series(extract_coordinates(x)))
 
-    # Pre-allocate dictionary with 0.0 to prevent missing keys
     rain_dict = {str(row['poly_uid']): 0.0 for _, row in df_coords.iterrows()}
     features_data = [{'uid': str(row['poly_uid']), 'lon': float(row['lon']), 'lat': float(row['lat'])} for _, row in df_coords.iterrows()]
 
@@ -118,6 +211,8 @@ def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JA
         chunk_data = features_data[i:i+chunk_size]
         ee_features = [ee.Feature(ee.Geometry.Point([d['lon'], d['lat']]), {'poly_uid': d['uid']}) for d in chunk_data]
         fc_chunk = ee.FeatureCollection(ee_features)
+
+        time.sleep(1.5)
 
         for attempt in range(3):
             try:
@@ -133,7 +228,6 @@ def extract_rainfall_for_polygons(polygons_df, target_date_str, days, source='JA
                     for f in features:
                         props = f.get('properties', {})
                         uid = props.get('poly_uid')
-                        # Handle GEE single-band reducer renaming
                         val = props.get(rain_col) or props.get('mean') or props.get('first')
                         if uid is not None and val is not None:
                             rain_dict[str(uid)] = float(val)
@@ -180,7 +274,6 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     # 3. Static Inference
     print("[ML] Predicting static morphological susceptibility...")
     
-    # Extract Scaler from pipeline and predict
     try:
         probs = model.predict_proba(X_static)[:, 1]
     except Exception as e:
@@ -221,7 +314,6 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     print("[ML] Combining static susceptibility with antecedent rainfall accumulation...")
     rain_col = f'Rn{best_days}_m'
     
-    # Prevent division by zero
     if train_ref_rain > 0:
         df_with_rain['Final_Dynamic_Susceptibility'] = 1.0 - (1.0 - df_with_rain['Susceptibility_Prob']) * np.exp(-df_with_rain[rain_col] / train_ref_rain)
     else:
@@ -230,7 +322,7 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
         
     df_with_rain.rename(columns={rain_col: 'Rn_m'}, inplace=True)
     
-    # --- FIX: MIN-MAX NORMALIZATION (SCALA 0-1) ---
+    # MIN-MAX NORMALIZATION (0-1 Scale)
     print("[ML] Applying Min-Max Normalization (0-1 scale) to final susceptibility...")
     min_susc = df_with_rain['Final_Dynamic_Susceptibility'].min()
     max_susc = df_with_rain['Final_Dynamic_Susceptibility'].max()
@@ -242,6 +334,7 @@ def get_prediction_logic(target_date_str, static_df, model, dummies_map, best_da
     
     return df_with_rain[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility']]
 
+
 def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_path, target_date, best_days):
     """Generates uncompressed GeoJSON and high-fidelity Raster-on-HTML Dashboard."""
     print("[EXPORT] Reading base geometries...")
@@ -249,7 +342,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     
     print(f"[JOIN] Geometries count: {len(gdf_base)} | Predictions count: {len(result_df)}")
     
-    # --- BULLETPROOF JOIN LOGIC ---
     if len(gdf_base) == len(result_df):
         print("[JOIN] Exact row count match! Mapping predictions directly by index to guarantee 100% polygon coverage.")
         merged = gdf_base.copy()
@@ -277,7 +369,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     merged['Final_Dynamic_Susceptibility'] = merged['Final_Dynamic_Susceptibility'].fillna(0.0).astype(float)
     merged['poly_uid'] = merged['poly_uid'].astype(str)
     
-    # --- RASTERIZATION FOR WEB MAP ---
     print("[EXPORT] Rasterizing geometries for web visualization...")
     minx, miny, maxx, maxy = merged.total_bounds
     res = 0.0002
@@ -315,7 +406,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
     
-    # --- BUILD FOLIUM MAP & INJECT DASHBOARD PANELS ---
     print("[EXPORT] Building interactive HTML dashboard with custom UI panels...")
     center_lat = (miny + maxy) / 2.0
     center_lon = (minx + maxx) / 2.0
@@ -440,7 +530,6 @@ def export_results(result_df, base_gpkg_path, output_geojson_path, output_html_p
     m.get_root().html.add_child(folium.Element(ui_html))
     m.save(output_html_path)
 
-    # --- SAVE UNCOMPRESSED GEOJSON ---
     print("[EXPORT] Optimizing and saving uncompressed GeoJSON for GIS users...")
     export_gdf = merged[['poly_uid', 'Susceptibility_Prob', 'Rn_m', 'Final_Dynamic_Susceptibility', 'geometry']].copy()
     export_gdf['geometry'] = export_gdf['geometry'].simplify(0.0001, preserve_topology=True)
